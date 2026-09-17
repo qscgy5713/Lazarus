@@ -19,12 +19,13 @@ Lazarus 就是定期幫你跑那一次還原。
 
 對每個設定的目標：
 
-1. 找到最新的備份檔（支援 glob，挑修改時間最新的——那才是你真的會拿來救命的那份）
-2. 檢查新鮮度（太舊的備份就算能還原也是失敗的備份）
-3. 起一個**用完就丟**的 Docker 資料庫容器
-4. 真的把 dump 還原進去
-5. 跑你定義的 SQL 斷言，確認資料真的在
-6. 拆掉容器
+1. （選用）跑 `fetch_command` 把備份從遠端抓到本機（見下方「遠端備份來源」）
+2. 找到最新的備份檔（支援 glob，挑修改時間最新的——那才是你真的會拿來救命的那份）
+3. 檢查新鮮度（太舊的備份就算能還原也是失敗的備份）
+4. 對 PostgreSQL / MySQL：起一個**用完就丟**的 Docker 資料庫容器；對 SQLite：直接複製一份用完即丟的檔案（見下方「SQLite 不需要 Docker」）
+5. 真的把備份還原進去
+6. 跑你定義的 SQL 斷言，確認資料真的在
+7. 拆掉容器（SQLite 則是刪掉暫存複本）
 
 全部通過 exit code 才是 0，方便直接塞進 cron 或 CI。多個目標預設會同時驗證（見下方「使用」一節的 `parallelism` 說明），彼此完全獨立、互不影響。
 
@@ -90,6 +91,7 @@ Exit code：`0` 全部通過、`1` 有驗證失敗、`2` 設定檔或參數有�
 targets:
   - name: production-postgres
     engine: postgres                # postgres、mysql 或 sqlite
+    # fetch_command: aws s3 cp ...   # 備份不在本機時才需要（見下方說明）
     path: /backups/shop-*.sql.gz    # 支援 glob，取最新的
     max_age: 26h                    # 超過這個年齡就算失敗
     max_restore_duration: 2h        # 還原本身超過這個時間就算失敗（見下方 RTO 說明）
@@ -136,6 +138,21 @@ size_drift:
 - 只看「變小」，備份變大不會觸發（資料只會越長越多是正常的）
 
 不設定的話（預設）完全不檢查，行為跟舊版一樣。
+
+### 遠端備份來源
+
+`path` 只認本機路徑——但大部分正式環境的備份根本不會放在跑 Lazarus 的這台機器上，通常是丟在 S3、專門的備份主機，或其他地方。`fetch_command` 讓你在 `path` 被查找之前，先跑一段 shell 指令把備份抓到本機：
+
+```yaml
+fetch_command: aws s3 cp s3://my-backups/postgres/shop-latest.sql.gz /backups/postgres/shop-latest.sql.gz
+fetch_timeout: 5m   # 預設 5 分鐘，避免抓取卡住讓 cron 無限等下去
+```
+
+`fetch_command` 完整透過 shell 執行（`sh -c`），管線、重導向、`&&` 串接指令都能用——你原本怎麼手動抓這份備份，這裡幾乎原封不動搬過來就能用（`aws s3 cp`、`scp`、`rclone`、`rsync` 都可以）。指令執行失敗（non-zero exit）會直接讓目標在 `fetch` 這個階段失敗，`path` 連查都不會查；指令自己印出的錯誤訊息（例如 `Access Denied`）會被原封不動保留在失敗訊息裡，方便直接定位問題。
+
+抓取需要的認證（AWS 憑證、SSH key 等）要讓執行 Lazarus 的那個行程本身拿得到——注意 cron 通常不會載入你 shell 的環境變數，需要另外設定。
+
+不設定 `fetch_command` 的目標行為完全不變，`path` 直接當本機路徑查找。
 
 ## 支援的備份格式
 
@@ -214,6 +231,8 @@ LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx ./lazarus --config laza
 **為什麼備份大小驟變偵測要另外存一個 state 檔，而不是塞進 checks？** checks 斷言的是「這次還原出來的資料庫」，天生沒有「跟上一次比較」的概念——它甚至不知道有沒有上一次。大小驟變偵測本質上是跨執行週期的比較，需要一個地方記住歷史，所以獨立成一個輕量的 JSON 檔，壞掉或刪除都不影響核心的還原驗證，只是重新歸零基準值而已。
 
 **SQLite 為什麼不用 Docker 容器？** 因為 Docker 容器解決的問題（一個乾淨的伺服器可以把 SQL 匯入進去）對 SQLite 根本不存在——SQLite 的備份本身就是一份完整、獨立的資料庫檔案，沒有「匯入」這一步，複製到別處就已經是一份乾淨的副本了。硬是包一層容器只會多一份不必要的複雜度，不會多驗證到任何東西。
+
+**為什麼 `fetch_command` 是一段 shell 指令，不是內建 S3/SFTP 客戶端？** 遠端儲存的種類沒有上限——S3、GCS、Azure Blob、公司內部的備份 API、單純一台用 scp 就能連的主機——每加一種都要新增一套設定選項跟一份程式碼，而且永遠追不完。讓使用者直接貼上自己已經在用的那行指令，Lazarus 不用認得任何一種儲存後端，也永遠不會漏掉某個團隊在用的冷門方案。
 
 ## 開發
 

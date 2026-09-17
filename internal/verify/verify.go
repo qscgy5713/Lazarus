@@ -12,6 +12,7 @@ import (
 	"lazarus/internal/backup"
 	"lazarus/internal/check"
 	"lazarus/internal/config"
+	"lazarus/internal/fetch"
 	"lazarus/internal/restore"
 	"lazarus/internal/sandbox"
 	"lazarus/internal/sqlitecheck"
@@ -22,6 +23,7 @@ import (
 type Stage string
 
 const (
+	StageFetch     Stage = "fetch"
 	StageLocate    Stage = "locate"
 	StageAge       Stage = "age"
 	StageSizeDrift Stage = "size_drift"
@@ -50,12 +52,20 @@ type Result struct {
 // run, if any (hasBaseline is false on a target's first-ever run).
 func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline bool) Result {
 	started := time.Now()
-	result := Result{Target: target.Name, Stage: StageLocate}
+	result := Result{Target: target.Name, Stage: StageFetch}
 	finish := func() Result {
 		result.Duration = time.Since(started)
 		return result
 	}
 
+	if target.FetchCommand != "" {
+		if err := fetch.Run(ctx, target.FetchCommand, target.FetchTimeout); err != nil {
+			result.Err = err
+			return finish()
+		}
+	}
+
+	result.Stage = StageLocate
 	file, err := backup.Locate(target.Path)
 	if err != nil {
 		result.Err = err

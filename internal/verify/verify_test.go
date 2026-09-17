@@ -190,6 +190,96 @@ func TestRunEndToEndSQLiteCatchesCorruptFile(t *testing.T) {
 
 func int64ptr(v int64) *int64 { return &v }
 
+// FetchCommand runs through a real shell (no Docker needed for that part
+// either), so these exercise the actual fetch -> locate handoff end to end:
+// a target whose backup doesn't exist at Path until FetchCommand puts it
+// there.
+
+func TestRunFetchesBackupBeforeLocating(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+	src := sqliteBackup(t, dir, "source.db", 4)
+	dst := filepath.Join(dir, "fetched.db")
+
+	if _, err := os.Stat(dst); err == nil {
+		t.Fatal("destination should not exist before the fetch command runs")
+	}
+
+	target := config.Target{
+		Name:         "remote-sqlite",
+		Engine:       config.EngineSQLite,
+		Path:         dst,
+		FetchCommand: fmt.Sprintf("cp %s %s", src, dst),
+		Checks: []config.Check{
+			{Name: "users exist", SQL: "SELECT count(*) FROM users", Min: int64ptr(1)},
+		},
+	}
+
+	result := Run(context.Background(), target, 0, false)
+
+	if !result.Passed {
+		t.Fatalf("Run() = %+v, want it to pass once the fetch command places the backup", result)
+	}
+}
+
+func TestRunFailsAtFetchStageWhenFetchCommandFails(t *testing.T) {
+	dir := t.TempDir()
+	target := config.Target{
+		Name:         "remote-sqlite",
+		Engine:       config.EngineSQLite,
+		Path:         filepath.Join(dir, "never-arrives.db"),
+		FetchCommand: "echo access denied >&2; exit 1",
+	}
+
+	result := Run(context.Background(), target, 0, false)
+
+	if result.Passed {
+		t.Fatal("Run() passed, want it to fail when the fetch command exits non-zero")
+	}
+	if result.Stage != StageFetch {
+		t.Errorf("Stage = %q, want %q", result.Stage, StageFetch)
+	}
+	if !strings.Contains(result.Err.Error(), "access denied") {
+		t.Errorf("error = %v, want it to include the fetch command's own diagnostic output", result.Err)
+	}
+}
+
+func TestRunFailsFastWhenFetchCommandOutlivesItsTimeout(t *testing.T) {
+	dir := t.TempDir()
+	target := config.Target{
+		Name:         "remote-sqlite",
+		Engine:       config.EngineSQLite,
+		Path:         filepath.Join(dir, "never-arrives.db"),
+		FetchCommand: "sleep 5",
+		FetchTimeout: 100 * time.Millisecond,
+	}
+
+	start := time.Now()
+	result := Run(context.Background(), target, 0, false)
+	elapsed := time.Since(start)
+
+	if result.Passed {
+		t.Fatal("Run() passed, want it to fail when the fetch command exceeds its timeout")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("Run() took %s, want the fetch to be killed near its 100ms timeout", elapsed)
+	}
+}
+
+func TestRunSkipsFetchWhenNoFetchCommandConfigured(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+	path := sqliteBackup(t, dir, "backup.db", 1)
+
+	target := config.Target{Name: "local-sqlite", Engine: config.EngineSQLite, Path: path}
+
+	result := Run(context.Background(), target, 0, false)
+
+	if !result.Passed {
+		t.Fatalf("Run() = %+v, want a plain local target with no fetch_command to still pass", result)
+	}
+}
+
 // RunAll's whole point is running targets concurrently, so these run real
 // SQLite targets (no Docker needed) through it under -race to prove the
 // concurrency itself is safe, not just that each target's own logic works.

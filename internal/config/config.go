@@ -77,6 +77,22 @@ type Target struct {
 	// one a restore would actually reach for in an emergency.
 	Path string `yaml:"path"`
 
+	// FetchCommand, if set, runs through a shell before Path is located —
+	// for a backup that lives in S3, on a remote host, or anywhere else a
+	// plain local path can't reach. It's responsible for placing a file (or
+	// files, for a glob Path) somewhere Path can then find; whatever tool
+	// already fetches the backup elsewhere (aws s3 cp, scp, rclone, ...)
+	// works here unchanged. A non-zero exit fails the target before Path is
+	// even looked at.
+	FetchCommand string `yaml:"fetch_command"`
+
+	// FetchTimeout caps how long FetchCommand may run before it's killed and
+	// the target fails. Without this, a stalled network mount or a
+	// credential prompt nobody's there to answer would hang a cron run
+	// indefinitely. Defaults to 5 minutes when FetchCommand is set and this
+	// is left at 0; meaningless without a FetchCommand.
+	FetchTimeout time.Duration `yaml:"fetch_timeout"`
+
 	// MaxAge fails the target if the newest backup is older than this. A
 	// restorable backup from three months ago is still a failed backup.
 	MaxAge time.Duration `yaml:"max_age"`
@@ -133,6 +149,8 @@ const defaultStateFile = "lazarus-state.json"
 
 const defaultParallelism = 4
 
+const defaultFetchTimeout = 5 * time.Minute
+
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -181,6 +199,10 @@ func (c *Config) applyDefaultsAndValidate() error {
 
 		if t.Path == "" {
 			return fmt.Errorf("target %q: path is required", t.Name)
+		}
+
+		if t.FetchCommand != "" && t.FetchTimeout <= 0 {
+			t.FetchTimeout = defaultFetchTimeout
 		}
 
 		switch t.Engine {

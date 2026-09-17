@@ -425,6 +425,80 @@ func TestParallelismRejectsNonPositiveExplicitValue(t *testing.T) {
 	}
 }
 
+func TestLoadParsesFetchCommand(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: prod-db
+    engine: postgres
+    path: /backups/prod.sql
+    fetch_command: aws s3 cp s3://bucket/prod.sql /backups/prod.sql
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Targets[0].FetchCommand != "aws s3 cp s3://bucket/prod.sql /backups/prod.sql" {
+		t.Errorf("FetchCommand = %q", cfg.Targets[0].FetchCommand)
+	}
+}
+
+func TestFetchTimeoutDefaultsWhenFetchCommandSetWithoutOne(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: prod-db
+    engine: postgres
+    path: /backups/prod.sql
+    fetch_command: aws s3 cp s3://bucket/prod.sql /backups/prod.sql
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Targets[0].FetchTimeout != defaultFetchTimeout {
+		t.Errorf("FetchTimeout = %v, want the default %v", cfg.Targets[0].FetchTimeout, defaultFetchTimeout)
+	}
+}
+
+func TestFetchTimeoutKeepsExplicitValue(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: prod-db
+    engine: postgres
+    path: /backups/prod.sql
+    fetch_command: aws s3 cp s3://bucket/prod.sql /backups/prod.sql
+    fetch_timeout: 30s
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Targets[0].FetchTimeout != 30*time.Second {
+		t.Errorf("FetchTimeout = %v, want the explicit 30s to win", cfg.Targets[0].FetchTimeout)
+	}
+}
+
+func TestFetchTimeoutStaysZeroWithoutFetchCommand(t *testing.T) {
+	// No fetch_command means fetch_timeout is meaningless — it shouldn't get
+	// a default applied it'll never be used for.
+	path := writeConfig(t, `
+targets:
+  - name: prod-db
+    engine: postgres
+    path: /backups/prod.sql
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Targets[0].FetchTimeout != 0 {
+		t.Errorf("FetchTimeout = %v, want 0 when there's no fetch_command", cfg.Targets[0].FetchTimeout)
+	}
+}
+
 func TestLoadParsesSizeDrift(t *testing.T) {
 	path := writeConfig(t, `
 targets:

@@ -36,6 +36,14 @@ targets:
   - name: production-postgres
     engine: postgres
 
+    # Only needed when the backup doesn't already live on this machine —
+    # most real backups are in S3, on a dedicated backup host, etc. Runs
+    # through a shell before `path` below is looked at; use whatever tool
+    # already fetches this backup elsewhere. A non-zero exit fails the
+    # target before path is even checked. See "遠端備份來源" in the README.
+    # fetch_command: aws s3 cp s3://my-backups/postgres/shop-latest.sql.gz /backups/postgres/shop-latest.sql.gz
+    # fetch_timeout: 5m   # defaults to 5m when fetch_command is set
+
     # Plain path or a glob. With a glob, the most recently modified match is
     # used — that's the file you'd actually restore in an emergency.
     path: /backups/postgres/shop-*.sql.gz
