@@ -48,6 +48,10 @@ func Text(w io.Writer, results []verify.Result) bool {
 			}
 			fmt.Fprintf(w, "      check %-6s %s (%s)\n", status, c.Name, detail)
 		}
+		if r.DebugHint != "" {
+			fmt.Fprintf(w, "      kept for inspection: %s\n", r.DebugHint)
+			fmt.Fprintf(w, "      (remember to clean it up yourself when done: docker rm -f, or delete the temp file)\n")
+		}
 	}
 
 	passed, failed := tally(results)
@@ -66,6 +70,7 @@ type jsonResult struct {
 	DurationMs        int64       `json:"duration_ms"`
 	RestoreDurationMs int64       `json:"restore_duration_ms,omitempty"`
 	Checks            []jsonCheck `json:"checks,omitempty"`
+	DebugHint         string      `json:"debug_hint,omitempty"`
 }
 
 type jsonCheck struct {
@@ -91,6 +96,7 @@ func JSON(w io.Writer, results []verify.Result) bool {
 			Stage:             string(r.Stage),
 			DurationMs:        r.Duration.Milliseconds(),
 			RestoreDurationMs: r.RestoreDuration.Milliseconds(),
+			DebugHint:         r.DebugHint,
 		}
 		if r.Err != nil {
 			jr.Error = r.Err.Error()

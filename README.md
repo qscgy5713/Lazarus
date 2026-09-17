@@ -70,6 +70,7 @@ FAIL  production-mysql [checks] check "customers table is populated" failed: got
 | `--config` | `lazarus.yml` | 設定檔路徑 |
 | `--target` | (全部) | 只驗證指定的一個目標 |
 | `--json` | `false` | 機器可讀的輸出，給 CI/腳本用 |
+| `--keep-on-failure` | `false` | 目標失敗時保留 sandbox 容器（或 SQLite 暫存檔）不清掉，方便直接連進去查資料（見下方「保留失敗現場除錯」） |
 
 環境變數：
 
@@ -82,6 +83,26 @@ Lazarus 會在 `state_file`（預設 `lazarus-state.json`）記錄每個目標�
 多個目標預設會同時驗證，最多 4 個一起跑（`parallelism`，可調整，設成 `1` 就變回一個一個跑）。每個目標本來就是完全獨立的（各自的 sandbox 容器，或各自的 SQLite 暫存複本），彼此不會互相干擾——只是縮短目標一多時整體要等的時間。輸出順序永遠跟設定檔裡的順序一致，跟實際完成的先後順序無關。
 
 Exit code：`0` 全部通過、`1` 有驗證失敗、`2` 設定檔或參數有問題。
+
+### 保留失敗現場除錯
+
+check 失敗時，容器（或 SQLite 暫存複本）預設會被立刻拆掉——只留下錯誤訊息，想進一步查是哪裡少了資料，得自己手動重跑一次還原再摸索。加上 `--keep-on-failure`，任何在**還原成功之後**才發生的失敗（RTO 超時、check 失敗）都會保留現場，並在輸出裡印出可以直接貼上執行的指令：
+
+```
+FAIL  shop [checks] check "users populated" failed: got 0, want at least 1
+      backup: /backups/shop.sql (997 B, 0s old)
+      restore took: 133ms
+      check FAILED users populated (got 0, want at least 1)
+      kept for inspection: docker exec -it lazarus-verify-1789637480837239000-1 psql --username lazarus --dbname lazarus_verify
+      (remember to clean it up yourself when done: docker rm -f, or delete the temp file)
+```
+
+幾個重點：
+
+- 只有 sandbox 容器（或 SQLite 暫存複本）已經建立之後才發生的失敗會保留——`restore`、`rto`、`checks` 都算；`fetch`、`locate`、`age`、`size_drift` 這些階段連容器都還沒起，沒有現場可留。連 `restore` 本身失敗都會保留是刻意的：即使還原中途就因為語法錯誤而中斷，容器裡通常還是留著中斷前已經執行成功的部分，那往往才是你想知道「到底跑到哪裡開始壞掉」的線索
+- 只有**失敗**的目標會保留，通過的目標一律照常清掉，不會留下一堆用不到的容器
+- 保留下來的容器**不會自動清理**，用完要自己 `docker rm -f`（或刪掉印出的 SQLite 暫存檔路徑）——這是刻意的除錯用選項，不是預設行為
+- sandbox 容器沒有對外開放連接埠，所以是透過 `docker exec` 連進容器內部查詢，不是從外部直接用 psql/mysql 連線
 
 ## 設定
 
@@ -233,6 +254,8 @@ LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx ./lazarus --config laza
 **SQLite 為什麼不用 Docker 容器？** 因為 Docker 容器解決的問題（一個乾淨的伺服器可以把 SQL 匯入進去）對 SQLite 根本不存在——SQLite 的備份本身就是一份完整、獨立的資料庫檔案，沒有「匯入」這一步，複製到別處就已經是一份乾淨的副本了。硬是包一層容器只會多一份不必要的複雜度，不會多驗證到任何東西。
 
 **為什麼 `fetch_command` 是一段 shell 指令，不是內建 S3/SFTP 客戶端？** 遠端儲存的種類沒有上限——S3、GCS、Azure Blob、公司內部的備份 API、單純一台用 scp 就能連的主機——每加一種都要新增一套設定選項跟一份程式碼，而且永遠追不完。讓使用者直接貼上自己已經在用的那行指令，Lazarus 不用認得任何一種儲存後端，也永遠不會漏掉某個團隊在用的冷門方案。
+
+**為什麼 `--keep-on-failure` 保留下來的容器不會自動清掉？** 因為這個選項存在的唯一理由就是讓人有機會進去看——如果保留幾秒鐘後又自動拆掉，等於沒留。清理的責任交給使用者是刻意的：這是一個明確選用的除錯工具，不是預設行為，用的人本來就該預期要自己收尾。
 
 ## 開發
 

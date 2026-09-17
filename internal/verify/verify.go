@@ -44,24 +44,41 @@ type Result struct {
 	Checks          []check.Result
 	Duration        time.Duration
 	RestoreDuration time.Duration
+
+	// DebugHint is a ready-to-run command for connecting to this target's
+	// sandbox (or SQLite temp file) after a failure, set only when
+	// keepOnFailure asked for it to be kept instead of torn down. Empty
+	// otherwise.
+	DebugHint string
 }
 
 // Run verifies a single target end to end. It only returns an error-free,
 // passing result when the backup actually restored and every check held.
 // baseline is the backup size recorded from this target's last fully-passed
 // run, if any (hasBaseline is false on a target's first-ever run).
-func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline bool) Result {
+// keepOnFailure, when true, leaves the sandbox container (or SQLite temp
+// file) in place instead of tearing it down whenever the target ends up
+// failing at or after the restore step, and populates the result's
+// DebugHint with how to connect to it — for looking at exactly what did or
+// didn't make it into the restored database, rather than guessing from the
+// error message alone.
+func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline bool, keepOnFailure bool) (result Result) {
 	started := time.Now()
-	result := Result{Target: target.Name, Stage: StageFetch}
-	finish := func() Result {
+	result = Result{Target: target.Name, Stage: StageFetch}
+	// A named return value, not a "finish() Result" helper returning a plain
+	// copy: the keep-on-failure defers below mutate result.DebugHint after
+	// deciding whether to tear down the sandbox, and only a named return
+	// value lets a defer's mutation actually reach the caller — a plain
+	// `return someCopy` would have already locked in its value before any
+	// deferred function ran.
+	defer func() {
 		result.Duration = time.Since(started)
-		return result
-	}
+	}()
 
 	if target.FetchCommand != "" {
 		if err := fetch.Run(ctx, target.FetchCommand, target.FetchTimeout); err != nil {
 			result.Err = err
-			return finish()
+			return
 		}
 	}
 
@@ -69,7 +86,7 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 	file, err := backup.Locate(target.Path)
 	if err != nil {
 		result.Err = err
-		return finish()
+		return
 	}
 	result.Backup = file
 
@@ -77,7 +94,7 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 	if target.MaxAge > 0 {
 		if age := file.Age(time.Now()); age > target.MaxAge {
 			result.Err = fmt.Errorf("newest backup is %s old, older than the %s limit", age.Round(time.Minute), target.MaxAge)
-			return finish()
+			return
 		}
 	}
 
@@ -85,7 +102,7 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 	if target.SizeDrift != nil && hasBaseline {
 		if exceedsSizeDrift(file.Size, baseline, target.SizeDrift.MaxDecreasePct) {
 			result.Err = sizeDriftError(file.Size, baseline, target.SizeDrift.MaxDecreasePct)
-			return finish()
+			return
 		}
 	}
 
@@ -105,13 +122,23 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 		path, cleanup, err := sqlitecheck.Prepare(file)
 		if err != nil {
 			result.Err = err
-			return finish()
+			return
 		}
-		defer cleanup()
+		// result is captured live: by the time this runs, result.Err
+		// reflects whatever the rest of Run ended up setting (or not), so
+		// this correctly decides keep-vs-clean-up after the fact regardless
+		// of which return path got there.
+		defer func() {
+			if keepOnFailure && result.Err != nil {
+				result.DebugHint = fmt.Sprintf("sqlite3 %s", path)
+				return
+			}
+			cleanup()
+		}()
 
 		if err := sqlitecheck.IntegrityCheck(ctx, path); err != nil {
 			result.Err = err
-			return finish()
+			return
 		}
 		result.RestoreDuration = time.Since(restoreStarted)
 		runChecks = func(ctx context.Context) []check.Result {
@@ -122,15 +149,21 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 		sb, err := sandbox.Start(ctx, target.Engine, target.Image)
 		if err != nil {
 			result.Err = err
-			return finish()
+			return
 		}
-		defer sb.Stop()
+		defer func() {
+			if keepOnFailure && result.Err != nil {
+				result.DebugHint = debugHint(sb)
+				return
+			}
+			sb.Stop()
+		}()
 
 		result.Stage = StageRestore
 		restoreStarted := time.Now()
 		if _, err := restore.Run(ctx, sb, target.Engine, file); err != nil {
 			result.Err = err
-			return finish()
+			return
 		}
 		result.RestoreDuration = time.Since(restoreStarted)
 		runChecks = func(ctx context.Context) []check.Result {
@@ -141,7 +174,7 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 	result.Stage = StageRTO
 	if exceedsRTO(result.RestoreDuration, target.MaxRestoreDuration) {
 		result.Err = rtoError(result.RestoreDuration, target.MaxRestoreDuration)
-		return finish()
+		return
 	}
 
 	result.Stage = StageChecks
@@ -149,13 +182,28 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 	for _, c := range result.Checks {
 		if !c.Passed {
 			result.Err = fmt.Errorf("check %q failed: %s", c.Name, c.Reason)
-			return finish()
+			return
 		}
 	}
 
 	result.Stage = StageDone
 	result.Passed = true
-	return finish()
+	return
+}
+
+// debugHint builds a ready-to-paste command for connecting to a kept
+// sandbox. The container's port is never published to the host (see
+// sandbox.Start), so this goes through `docker exec` rather than a direct
+// client connection from outside the container.
+func debugHint(sb *sandbox.Sandbox) string {
+	switch sb.Engine {
+	case config.EngineMySQL:
+		return fmt.Sprintf("docker exec -it %s mysql --user=root --password=%s %s",
+			sb.Name, sandbox.Password(), sandbox.DBName())
+	default: // Postgres
+		return fmt.Sprintf("docker exec -it %s psql --username %s --dbname %s",
+			sb.Name, sandbox.User(), sandbox.DBName())
+	}
 }
 
 // exceedsRTO reports whether a restore blew through its configured time
@@ -199,8 +247,11 @@ func sizeDriftError(current, baseline int64, maxDecreasePct float64) error {
 // throwaway file for SQLite), so there's no shared state between them to
 // serialize on other than st, which is already safe for concurrent use.
 // parallelism <= 0 is treated as 1. Results are returned in the same order
-// as targets, regardless of which finished first.
-func RunAll(ctx context.Context, targets []config.Target, st *state.State, parallelism int) []Result {
+// as targets, regardless of which finished first. keepOnFailure is passed
+// straight through to each target's Run — with several targets failing at
+// once, each one that qualifies gets its own kept sandbox, left for the
+// caller to inspect and clean up individually.
+func RunAll(ctx context.Context, targets []config.Target, st *state.State, parallelism int, keepOnFailure bool) []Result {
 	if parallelism <= 0 {
 		parallelism = 1
 	}
@@ -222,7 +273,7 @@ func RunAll(ctx context.Context, targets []config.Target, st *state.State, paral
 				baseline, hasBaseline = ts.LastSizeBytes, true
 			}
 
-			result := Run(ctx, target, baseline, hasBaseline)
+			result := Run(ctx, target, baseline, hasBaseline, keepOnFailure)
 			results[i] = result
 
 			if result.Passed && result.Backup != nil {

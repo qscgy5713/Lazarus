@@ -22,6 +22,7 @@ func main() {
 	configPath := flag.String("config", "lazarus.yml", "path to the config file")
 	targetName := flag.String("target", "", "verify only this target (default: all)")
 	asJSON := flag.Bool("json", false, "machine-readable output")
+	keepOnFailure := flag.Bool("keep-on-failure", false, "keep a failing target's sandbox container (or SQLite temp file) instead of tearing it down, for manual inspection")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -54,7 +55,7 @@ func main() {
 		st = state.New()
 	}
 
-	results := verify.RunAll(ctx, targets, st, cfg.Parallelism)
+	results := verify.RunAll(ctx, targets, st, cfg.Parallelism, *keepOnFailure)
 
 	if err := st.Save(cfg.StateFile); err != nil {
 		fmt.Fprintf(os.Stderr, "lazarus: WARNING: could not save state file %q: %v\n", cfg.StateFile, err)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"lazarus/internal/config"
+	"lazarus/internal/sandbox"
 	"lazarus/internal/state"
 )
 
@@ -127,7 +128,7 @@ func TestRunEndToEndSQLitePasses(t *testing.T) {
 		},
 	}
 
-	result := Run(context.Background(), target, 0, false)
+	result := Run(context.Background(), target, 0, false, false)
 
 	if !result.Passed {
 		t.Fatalf("Run() = %+v, want it to pass", result)
@@ -154,7 +155,7 @@ func TestRunEndToEndSQLiteCatchesEmptyTable(t *testing.T) {
 		},
 	}
 
-	result := Run(context.Background(), target, 0, false)
+	result := Run(context.Background(), target, 0, false, false)
 
 	if result.Passed {
 		t.Fatal("Run() passed, want it to fail against an empty table")
@@ -178,7 +179,7 @@ func TestRunEndToEndSQLiteCatchesCorruptFile(t *testing.T) {
 		Path:   path,
 	}
 
-	result := Run(context.Background(), target, 0, false)
+	result := Run(context.Background(), target, 0, false, false)
 
 	if result.Passed {
 		t.Fatal("Run() passed, want it to fail on a file that isn't a real SQLite database")
@@ -186,9 +187,150 @@ func TestRunEndToEndSQLiteCatchesCorruptFile(t *testing.T) {
 	if result.Stage != StageRestore {
 		t.Errorf("Stage = %q, want %q", result.Stage, StageRestore)
 	}
+	if result.DebugHint != "" {
+		t.Errorf("DebugHint = %q, want empty when keepOnFailure wasn't requested", result.DebugHint)
+	}
+}
+
+func TestRunKeepsSQLiteTempFileWhenRestoreItselfFails(t *testing.T) {
+	// keepOnFailure isn't just for a check that fails against a
+	// successfully-restored database — a failure in the restore step itself
+	// (the copy was made, but the file isn't valid) still has a temp file
+	// worth keeping, and the docs promise this too.
+	requireSQLite(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "backup.db")
+	if err := os.WriteFile(path, []byte("this is not a sqlite database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	target := config.Target{Name: "sqlite-target", Engine: config.EngineSQLite, Path: path}
+
+	result := Run(context.Background(), target, 0, false, true)
+
+	if result.Passed {
+		t.Fatal("Run() passed, want it to fail on a file that isn't a real SQLite database")
+	}
+	if result.Stage != StageRestore {
+		t.Errorf("Stage = %q, want %q", result.Stage, StageRestore)
+	}
+	if result.DebugHint == "" {
+		t.Fatal("DebugHint is empty, want a hint pointing at the kept temp file even for a restore-stage failure")
+	}
+
+	tempPath := strings.TrimSpace(strings.TrimPrefix(result.DebugHint, "sqlite3"))
+	if _, err := os.Stat(tempPath); err != nil {
+		t.Errorf("kept temp file %q should still exist after Run() returns: %v", tempPath, err)
+	}
+	os.Remove(tempPath)
 }
 
 func int64ptr(v int64) *int64 { return &v }
+
+func TestDebugHintForPostgres(t *testing.T) {
+	sb := &sandbox.Sandbox{Name: "lazarus-verify-123", Engine: config.EnginePostgres}
+
+	hint := debugHint(sb)
+
+	if !strings.Contains(hint, "docker exec -it lazarus-verify-123") || !strings.Contains(hint, "psql") {
+		t.Errorf("debugHint() = %q, want a docker exec ... psql command naming the container", hint)
+	}
+}
+
+func TestDebugHintForMySQL(t *testing.T) {
+	sb := &sandbox.Sandbox{Name: "lazarus-verify-456", Engine: config.EngineMySQL}
+
+	hint := debugHint(sb)
+
+	if !strings.Contains(hint, "docker exec -it lazarus-verify-456") || !strings.Contains(hint, "mysql") {
+		t.Errorf("debugHint() = %q, want a docker exec ... mysql command naming the container", hint)
+	}
+}
+
+// keepOnFailure is exercised against SQLite since, like the rest of that
+// path, it needs no Docker daemon to prove the real behavior: the temp file
+// really does (or doesn't) survive Run() returning.
+
+func TestRunKeepsSQLiteTempFileOnFailureWhenAsked(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+	path := sqliteBackup(t, dir, "backup.db", 0) // empty table -> check fails
+
+	target := config.Target{
+		Name:   "sqlite-target",
+		Engine: config.EngineSQLite,
+		Path:   path,
+		Checks: []config.Check{
+			{Name: "users exist", SQL: "SELECT count(*) FROM users", Min: int64ptr(1)},
+		},
+	}
+
+	result := Run(context.Background(), target, 0, false, true)
+
+	if result.Passed {
+		t.Fatal("Run() passed, want it to fail against an empty table")
+	}
+	if result.DebugHint == "" {
+		t.Fatal("DebugHint is empty, want a hint pointing at the kept temp file")
+	}
+	if !strings.Contains(result.DebugHint, "sqlite3") {
+		t.Errorf("DebugHint = %q, want it to mention sqlite3", result.DebugHint)
+	}
+
+	tempPath := strings.TrimSpace(strings.TrimPrefix(result.DebugHint, "sqlite3"))
+	if _, err := os.Stat(tempPath); err != nil {
+		t.Errorf("kept temp file %q should still exist after Run() returns: %v", tempPath, err)
+	}
+	os.Remove(tempPath) // test cleanup — Run() intentionally left this behind
+}
+
+func TestRunCleansUpSQLiteTempFileOnFailureWhenNotAsked(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+	path := sqliteBackup(t, dir, "backup.db", 0)
+
+	target := config.Target{
+		Name:   "sqlite-target",
+		Engine: config.EngineSQLite,
+		Path:   path,
+		Checks: []config.Check{
+			{Name: "users exist", SQL: "SELECT count(*) FROM users", Min: int64ptr(1)},
+		},
+	}
+
+	result := Run(context.Background(), target, 0, false, false)
+
+	if result.Passed {
+		t.Fatal("Run() passed, want it to fail against an empty table")
+	}
+	if result.DebugHint != "" {
+		t.Errorf("DebugHint = %q, want empty when keepOnFailure wasn't requested", result.DebugHint)
+	}
+}
+
+func TestRunCleansUpSQLiteTempFileOnSuccessEvenWithKeepOnFailureSet(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+	path := sqliteBackup(t, dir, "backup.db", 1)
+
+	target := config.Target{
+		Name:   "sqlite-target",
+		Engine: config.EngineSQLite,
+		Path:   path,
+		Checks: []config.Check{
+			{Name: "users exist", SQL: "SELECT count(*) FROM users", Min: int64ptr(1)},
+		},
+	}
+
+	result := Run(context.Background(), target, 0, false, true)
+
+	if !result.Passed {
+		t.Fatalf("Run() = %+v, want it to pass", result)
+	}
+	if result.DebugHint != "" {
+		t.Errorf("DebugHint = %q, want empty on success — keepOnFailure only applies to failures", result.DebugHint)
+	}
+}
 
 // FetchCommand runs through a real shell (no Docker needed for that part
 // either), so these exercise the actual fetch -> locate handoff end to end:
@@ -215,7 +357,7 @@ func TestRunFetchesBackupBeforeLocating(t *testing.T) {
 		},
 	}
 
-	result := Run(context.Background(), target, 0, false)
+	result := Run(context.Background(), target, 0, false, false)
 
 	if !result.Passed {
 		t.Fatalf("Run() = %+v, want it to pass once the fetch command places the backup", result)
@@ -231,7 +373,7 @@ func TestRunFailsAtFetchStageWhenFetchCommandFails(t *testing.T) {
 		FetchCommand: "echo access denied >&2; exit 1",
 	}
 
-	result := Run(context.Background(), target, 0, false)
+	result := Run(context.Background(), target, 0, false, false)
 
 	if result.Passed {
 		t.Fatal("Run() passed, want it to fail when the fetch command exits non-zero")
@@ -255,7 +397,7 @@ func TestRunFailsFastWhenFetchCommandOutlivesItsTimeout(t *testing.T) {
 	}
 
 	start := time.Now()
-	result := Run(context.Background(), target, 0, false)
+	result := Run(context.Background(), target, 0, false, false)
 	elapsed := time.Since(start)
 
 	if result.Passed {
@@ -273,7 +415,7 @@ func TestRunSkipsFetchWhenNoFetchCommandConfigured(t *testing.T) {
 
 	target := config.Target{Name: "local-sqlite", Engine: config.EngineSQLite, Path: path}
 
-	result := Run(context.Background(), target, 0, false)
+	result := Run(context.Background(), target, 0, false, false)
 
 	if !result.Passed {
 		t.Fatalf("Run() = %+v, want a plain local target with no fetch_command to still pass", result)
@@ -302,7 +444,7 @@ func TestRunAllPreservesTargetOrderRegardlessOfCompletionOrder(t *testing.T) {
 		}
 	}
 
-	results := RunAll(context.Background(), targets, state.New(), 4)
+	results := RunAll(context.Background(), targets, state.New(), 4, false)
 
 	if len(results) != n {
 		t.Fatalf("got %d results, want %d", len(results), n)
@@ -334,7 +476,7 @@ func TestRunAllRecordsBaselineForEveryPassingTargetConcurrently(t *testing.T) {
 	}
 
 	st := state.New()
-	results := RunAll(context.Background(), targets, st, 8)
+	results := RunAll(context.Background(), targets, st, 8, false)
 
 	for _, r := range results {
 		if !r.Passed {
@@ -364,7 +506,7 @@ func TestRunAllTreatsNonPositiveParallelismAsOne(t *testing.T) {
 	target := config.Target{Name: "t", Engine: config.EngineSQLite, Path: path}
 
 	for _, p := range []int{0, -1} {
-		results := RunAll(context.Background(), []config.Target{target}, state.New(), p)
+		results := RunAll(context.Background(), []config.Target{target}, state.New(), p, false)
 		if len(results) != 1 || !results[0].Passed {
 			t.Errorf("RunAll with parallelism=%d = %+v, want a single passing result", p, results)
 		}
