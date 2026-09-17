@@ -32,6 +32,14 @@ targets:
     # perfectly but is three weeks old is still a failed backup.
     max_age: 26h
 
+    # Fail if the restore step alone takes longer than this. A backup that
+    # restores correctly but takes 6 hours is still a failed backup if your
+    # service can only tolerate an hour of downtime — this is how most teams
+    # find out their real recovery time, since it's otherwise measured for
+    # the first time during an actual incident. Omit for no limit; the
+    # duration is reported either way.
+    max_restore_duration: 2h
+
     # Sandbox image. Match your production major version — a dump from
     # Postgres 16 won't restore into 14.
     image: postgres:16-alpine

@@ -282,3 +282,38 @@ func TestNotifyRejectsUnknownFormatAndWhen(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadParsesMaxRestoreDuration(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: prod-db
+    engine: postgres
+    path: /backups/prod.sql
+    max_restore_duration: 1h
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Targets[0].MaxRestoreDuration != time.Hour {
+		t.Errorf("MaxRestoreDuration = %v, want 1h", cfg.Targets[0].MaxRestoreDuration)
+	}
+}
+
+func TestMaxRestoreDurationDefaultsToZeroMeaningNoLimit(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: prod-db
+    engine: postgres
+    path: /backups/prod.sql
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Targets[0].MaxRestoreDuration != 0 {
+		t.Errorf("MaxRestoreDuration = %v, want 0 (no limit) by default", cfg.Targets[0].MaxRestoreDuration)
+	}
+}

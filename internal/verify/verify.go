@@ -23,19 +23,21 @@ const (
 	StageAge     Stage = "age"
 	StageSandbox Stage = "sandbox"
 	StageRestore Stage = "restore"
+	StageRTO     Stage = "rto"
 	StageChecks  Stage = "checks"
 	StageDone    Stage = "done"
 )
 
 // Result is the verdict for one target.
 type Result struct {
-	Target   string
-	Passed   bool
-	Stage    Stage
-	Err      error
-	Backup   *backup.File
-	Checks   []check.Result
-	Duration time.Duration
+	Target          string
+	Passed          bool
+	Stage           Stage
+	Err             error
+	Backup          *backup.File
+	Checks          []check.Result
+	Duration        time.Duration
+	RestoreDuration time.Duration
 }
 
 // Run verifies a single target end to end. It only returns an error-free,
@@ -72,8 +74,16 @@ func Run(ctx context.Context, target config.Target) Result {
 	defer sb.Stop()
 
 	result.Stage = StageRestore
+	restoreStarted := time.Now()
 	if _, err := restore.Run(ctx, sb, target.Engine, file); err != nil {
 		result.Err = err
+		return finish()
+	}
+	result.RestoreDuration = time.Since(restoreStarted)
+
+	result.Stage = StageRTO
+	if exceedsRTO(result.RestoreDuration, target.MaxRestoreDuration) {
+		result.Err = rtoError(result.RestoreDuration, target.MaxRestoreDuration)
 		return finish()
 	}
 
@@ -89,6 +99,19 @@ func Run(ctx context.Context, target config.Target) Result {
 	result.Stage = StageDone
 	result.Passed = true
 	return finish()
+}
+
+// exceedsRTO reports whether a restore blew through its configured time
+// budget. limit <= 0 means no budget was set.
+func exceedsRTO(actual, limit time.Duration) bool {
+	return limit > 0 && actual > limit
+}
+
+func rtoError(actual, limit time.Duration) error {
+	// Millisecond precision: a sub-second restore against a very tight
+	// limit would otherwise round down to a nonsensical "0s".
+	return fmt.Errorf("restore took %s, longer than the %s RTO limit",
+		actual.Round(time.Millisecond), limit)
 }
 
 // RunAll verifies every target, continuing past failures so one broken

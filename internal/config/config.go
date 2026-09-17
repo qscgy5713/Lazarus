@@ -63,6 +63,15 @@ type Target struct {
 	// restorable backup from three months ago is still a failed backup.
 	MaxAge time.Duration `yaml:"max_age"`
 
+	// MaxRestoreDuration fails the target if the restore step alone (not
+	// counting sandbox startup or checks) takes longer than this. A backup
+	// that restores correctly but takes 6 hours is still a failed backup if
+	// the service it belongs to can only tolerate an hour of downtime — this
+	// is how most teams find out their real recovery time, since restore
+	// duration is otherwise measured for the first time during an incident.
+	// 0 (the default) means no limit; the duration is still reported either way.
+	MaxRestoreDuration time.Duration `yaml:"max_restore_duration"`
+
 	// Image is the container image used as the throwaway restore sandbox.
 	// Defaults per engine if empty.
 	Image string `yaml:"image"`

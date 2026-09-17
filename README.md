@@ -50,11 +50,13 @@ cp lazarus.example.yml lazarus.yml   # 改成你的備份路徑
 ```
 PASS  production-postgres (5.3s)
       backup: /backups/postgres/shop-2026-09-17.sql.gz (14.4 KB, 2h13m old)
+      restore took: 1m42s
       check ok     users table is populated (= 1841)
       check ok     orders from the last week made it in (= 327)
 
 FAIL  production-mysql [checks] check "customers table is populated" failed: got 0, want at least 1
       backup: /backups/mysql/app-latest.sql (2.1 KB, 1h02m old)
+      restore took: 892ms
       check FAILED customers table is populated (got 0, want at least 1)
 
 1 passed, 1 failed
@@ -83,10 +85,11 @@ Exit code：`0` 全部通過、`1` 有驗證失敗、`2` 設定檔或參數有�
 ```yaml
 targets:
   - name: production-postgres
-    engine: postgres              # postgres 或 mysql
-    path: /backups/shop-*.sql.gz  # 支援 glob，取最新的
-    max_age: 26h                  # 超過這個年齡就算失敗
-    image: postgres:16-alpine     # sandbox 用的 image，要對應你的正式版本
+    engine: postgres                # postgres 或 mysql
+    path: /backups/shop-*.sql.gz    # 支援 glob，取最新的
+    max_age: 26h                    # 超過這個年齡就算失敗
+    max_restore_duration: 2h        # 還原本身超過這個時間就算失敗（見下方 RTO 說明）
+    image: postgres:16-alpine       # sandbox 用的 image，要對應你的正式版本
     checks:
       - name: users table is populated
         sql: SELECT count(*) FROM users
@@ -100,6 +103,16 @@ targets:
 - `expect_min`：至少要有多少（最常用，`expect_min: 1` = 這張表不能是空的）
 - `expect_max`：最多多少
 - `expect_equal`：剛好等於多少
+
+### 還原時間上限（RTO）
+
+`max_restore_duration` 只算「還原」那一步本身花的時間（不含起 sandbox、跑 checks）。這個數字平常沒有人知道——大部分團隊第一次量到真實的還原時間，是真的出事、正在等資料庫救回來的那一刻。
+
+```yaml
+max_restore_duration: 2h   # 服務最多只能忍受停機 2 小時，還原超過就算失敗
+```
+
+不設也沒關係，還原耗時每次都會顯示在輸出裡（`restore took: 1m42s`），純粹當參考資訊。
 
 ## 支援的備份格式
 

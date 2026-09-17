@@ -30,6 +30,15 @@ func Text(w io.Writer, results []verify.Result) bool {
 				r.Backup.Age(time.Now()).Round(time.Minute),
 			)
 		}
+		if r.RestoreDuration > 0 {
+			// Surfaced even without a configured limit: restore time is
+			// otherwise only discovered for the first time during a real
+			// incident, so it's worth seeing on every run. Millisecond
+			// precision (matching the overall duration line above) because
+			// rounding to whole seconds turns a real 116ms restore into a
+			// misleading "0s".
+			fmt.Fprintf(w, "      restore took: %s\n", r.RestoreDuration.Round(time.Millisecond))
+		}
 		for _, c := range r.Checks {
 			status := "ok"
 			detail := fmt.Sprintf("= %d", c.Value)
@@ -47,14 +56,15 @@ func Text(w io.Writer, results []verify.Result) bool {
 }
 
 type jsonResult struct {
-	Target     string      `json:"target"`
-	Passed     bool        `json:"passed"`
-	Stage      string      `json:"stage"`
-	Error      string      `json:"error,omitempty"`
-	BackupPath string      `json:"backup_path,omitempty"`
-	BackupAge  string      `json:"backup_age,omitempty"`
-	DurationMs int64       `json:"duration_ms"`
-	Checks     []jsonCheck `json:"checks,omitempty"`
+	Target            string      `json:"target"`
+	Passed            bool        `json:"passed"`
+	Stage             string      `json:"stage"`
+	Error             string      `json:"error,omitempty"`
+	BackupPath        string      `json:"backup_path,omitempty"`
+	BackupAge         string      `json:"backup_age,omitempty"`
+	DurationMs        int64       `json:"duration_ms"`
+	RestoreDurationMs int64       `json:"restore_duration_ms,omitempty"`
+	Checks            []jsonCheck `json:"checks,omitempty"`
 }
 
 type jsonCheck struct {
@@ -75,10 +85,11 @@ func JSON(w io.Writer, results []verify.Result) bool {
 		}
 
 		jr := jsonResult{
-			Target:     r.Target,
-			Passed:     r.Passed,
-			Stage:      string(r.Stage),
-			DurationMs: r.Duration.Milliseconds(),
+			Target:            r.Target,
+			Passed:            r.Passed,
+			Stage:             string(r.Stage),
+			DurationMs:        r.Duration.Milliseconds(),
+			RestoreDurationMs: r.RestoreDuration.Milliseconds(),
 		}
 		if r.Err != nil {
 			jr.Error = r.Err.Error()
