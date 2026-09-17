@@ -54,7 +54,7 @@ func main() {
 		st = state.New()
 	}
 
-	results := verify.RunAll(ctx, targets, st)
+	results := verify.RunAll(ctx, targets, st, cfg.Parallelism)
 
 	if err := st.Save(cfg.StateFile); err != nil {
 		fmt.Fprintf(os.Stderr, "lazarus: WARNING: could not save state file %q: %v\n", cfg.StateFile, err)

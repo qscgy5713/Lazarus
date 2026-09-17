@@ -6,6 +6,7 @@ package verify
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"lazarus/internal/backup"
@@ -182,24 +183,47 @@ func sizeDriftError(current, baseline int64, maxDecreasePct float64) error {
 // size-drift baseline and is updated in place with the size from every
 // target that fully passes — a run that fails never moves the baseline, so
 // a genuinely broken backup can't quietly become the new normal.
-func RunAll(ctx context.Context, targets []config.Target, st *state.State) []Result {
-	results := make([]Result, 0, len(targets))
-	for _, target := range targets {
-		var baseline int64
-		var hasBaseline bool
-		if ts, ok := st.Get(target.Name); ok {
-			baseline, hasBaseline = ts.LastSizeBytes, true
-		}
-
-		result := Run(ctx, target, baseline, hasBaseline)
-		results = append(results, result)
-
-		if result.Passed && result.Backup != nil {
-			st.Set(target.Name, state.TargetState{
-				LastSizeBytes: result.Backup.Size,
-				UpdatedAt:     time.Now(),
-			})
-		}
+//
+// Up to parallelism targets are verified concurrently — each one's restore
+// is already fully isolated (its own sandbox container, or its own
+// throwaway file for SQLite), so there's no shared state between them to
+// serialize on other than st, which is already safe for concurrent use.
+// parallelism <= 0 is treated as 1. Results are returned in the same order
+// as targets, regardless of which finished first.
+func RunAll(ctx context.Context, targets []config.Target, st *state.State, parallelism int) []Result {
+	if parallelism <= 0 {
+		parallelism = 1
 	}
+
+	results := make([]Result, len(targets))
+	sem := make(chan struct{}, parallelism)
+	var wg sync.WaitGroup
+
+	for i, target := range targets {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, target config.Target) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			var baseline int64
+			var hasBaseline bool
+			if ts, ok := st.Get(target.Name); ok {
+				baseline, hasBaseline = ts.LastSizeBytes, true
+			}
+
+			result := Run(ctx, target, baseline, hasBaseline)
+			results[i] = result
+
+			if result.Passed && result.Backup != nil {
+				st.Set(target.Name, state.TargetState{
+					LastSizeBytes: result.Backup.Size,
+					UpdatedAt:     time.Now(),
+				})
+			}
+		}(i, target)
+	}
+
+	wg.Wait()
 	return results
 }

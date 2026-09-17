@@ -9,6 +9,12 @@
 # the next run just re-establishes baselines from scratch.
 state_file: lazarus-state.json
 
+# How many targets to verify at once. Each one's restore is already fully
+# isolated (its own sandbox container, or its own throwaway file for
+# SQLite), so there's nothing to serialize on. Defaults to 4; set to 1 to
+# verify targets one at a time instead.
+parallelism: 4
+
 # Where to report a run's outcome. Without this, a 4am cron run that finds a
 # broken backup only says so through its exit code — and nobody reads that.
 notify:

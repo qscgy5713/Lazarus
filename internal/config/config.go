@@ -29,6 +29,14 @@ type Config struct {
 	// to lazarus-state.json next to wherever the tool is run from.
 	StateFile string `yaml:"state_file"`
 
+	// Parallelism caps how many targets are verified at once. Each target's
+	// restore is already fully isolated (its own sandbox container, or its
+	// own throwaway file for SQLite), so there's nothing to unify them for —
+	// running them one at a time just makes a cron window longer than it
+	// needs to be. Defaults to 4; set to 1 to restore the old sequential
+	// behavior.
+	Parallelism int `yaml:"parallelism"`
+
 	Targets []Target `yaml:"targets"`
 }
 
@@ -123,6 +131,8 @@ const (
 
 const defaultStateFile = "lazarus-state.json"
 
+const defaultParallelism = 4
+
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -151,6 +161,10 @@ func (c *Config) applyDefaultsAndValidate() error {
 
 	if c.StateFile == "" {
 		c.StateFile = defaultStateFile
+	}
+
+	if c.Parallelism <= 0 {
+		c.Parallelism = defaultParallelism
 	}
 
 	seen := make(map[string]bool, len(c.Targets))

@@ -2,6 +2,7 @@ package verify
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"lazarus/internal/config"
+	"lazarus/internal/state"
 )
 
 func TestExceedsRTO(t *testing.T) {
@@ -187,3 +189,94 @@ func TestRunEndToEndSQLiteCatchesCorruptFile(t *testing.T) {
 }
 
 func int64ptr(v int64) *int64 { return &v }
+
+// RunAll's whole point is running targets concurrently, so these run real
+// SQLite targets (no Docker needed) through it under -race to prove the
+// concurrency itself is safe, not just that each target's own logic works.
+
+func TestRunAllPreservesTargetOrderRegardlessOfCompletionOrder(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+
+	const n = 8
+	targets := make([]config.Target, n)
+	for i := 0; i < n; i++ {
+		// Varying row counts vary each target's own work slightly, so
+		// completion order in practice won't match target order — which is
+		// exactly what this test needs to be a meaningful check.
+		path := sqliteBackup(t, dir, fmt.Sprintf("backup-%d.db", i), i)
+		targets[i] = config.Target{
+			Name:   fmt.Sprintf("target-%d", i),
+			Engine: config.EngineSQLite,
+			Path:   path,
+		}
+	}
+
+	results := RunAll(context.Background(), targets, state.New(), 4)
+
+	if len(results) != n {
+		t.Fatalf("got %d results, want %d", len(results), n)
+	}
+	for i, r := range results {
+		want := fmt.Sprintf("target-%d", i)
+		if r.Target != want {
+			t.Errorf("results[%d].Target = %q, want %q — order must match the input targets", i, r.Target, want)
+		}
+	}
+}
+
+func TestRunAllRecordsBaselineForEveryPassingTargetConcurrently(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+
+	const n = 20
+	targets := make([]config.Target, n)
+	wantSize := make(map[string]int64, n)
+	for i := 0; i < n; i++ {
+		path := sqliteBackup(t, dir, fmt.Sprintf("backup-%d.db", i), 1)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := fmt.Sprintf("target-%d", i)
+		targets[i] = config.Target{Name: name, Engine: config.EngineSQLite, Path: path}
+		wantSize[name] = info.Size()
+	}
+
+	st := state.New()
+	results := RunAll(context.Background(), targets, st, 8)
+
+	for _, r := range results {
+		if !r.Passed {
+			t.Fatalf("target %q failed: %v", r.Target, r.Err)
+		}
+	}
+
+	// This is the part concurrent Set calls could lose: every one of the 20
+	// targets that passed must have its own baseline recorded, not just
+	// some subset that happened to avoid a race on the shared map.
+	for name, want := range wantSize {
+		ts, ok := st.Get(name)
+		if !ok {
+			t.Errorf("target %q: no baseline recorded after a passing run", name)
+			continue
+		}
+		if ts.LastSizeBytes != want {
+			t.Errorf("target %q: baseline size = %d, want %d", name, ts.LastSizeBytes, want)
+		}
+	}
+}
+
+func TestRunAllTreatsNonPositiveParallelismAsOne(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+	path := sqliteBackup(t, dir, "backup.db", 1)
+	target := config.Target{Name: "t", Engine: config.EngineSQLite, Path: path}
+
+	for _, p := range []int{0, -1} {
+		results := RunAll(context.Background(), []config.Target{target}, state.New(), p)
+		if len(results) != 1 || !results[0].Passed {
+			t.Errorf("RunAll with parallelism=%d = %+v, want a single passing result", p, results)
+		}
+	}
+}

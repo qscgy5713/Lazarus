@@ -372,6 +372,59 @@ targets:
 	}
 }
 
+func TestParallelismDefaultsWhenNotSet(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: prod-db
+    engine: postgres
+    path: /backups/prod.sql
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Parallelism != defaultParallelism {
+		t.Errorf("Parallelism = %d, want default %d", cfg.Parallelism, defaultParallelism)
+	}
+}
+
+func TestParallelismKeepsExplicitValue(t *testing.T) {
+	path := writeConfig(t, `
+parallelism: 1
+targets:
+  - name: prod-db
+    engine: postgres
+    path: /backups/prod.sql
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Parallelism != 1 {
+		t.Errorf("Parallelism = %d, want the explicit value 1 to win", cfg.Parallelism)
+	}
+}
+
+func TestParallelismRejectsNonPositiveExplicitValue(t *testing.T) {
+	// 0 is ambiguous between "not set" and "explicitly disabled", and a
+	// negative worker count makes no sense, so both fall back to the
+	// default rather than silently becoming 1 or panicking on a bad
+	// channel size.
+	for _, v := range []string{"0", "-1"} {
+		path := writeConfig(t, "parallelism: "+v+"\ntargets:\n  - name: a\n    engine: postgres\n    path: /b.sql")
+
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.Parallelism != defaultParallelism {
+			t.Errorf("parallelism: %s -> Parallelism = %d, want it to fall back to the default %d", v, cfg.Parallelism, defaultParallelism)
+		}
+	}
+}
+
 func TestLoadParsesSizeDrift(t *testing.T) {
 	path := writeConfig(t, `
 targets:

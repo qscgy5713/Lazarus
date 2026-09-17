@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -17,8 +18,11 @@ type TargetState struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
-// State is the full on-disk record, keyed by target name.
+// State is the full on-disk record, keyed by target name. Verifying targets
+// in parallel means Get and Set can be called concurrently from different
+// goroutines, so access to Targets is guarded by mu.
 type State struct {
+	mu      sync.Mutex
 	Targets map[string]TargetState `json:"targets"`
 }
 
@@ -63,12 +67,16 @@ func (s *State) Save(path string) error {
 
 // Get returns the remembered state for target, if any.
 func (s *State) Get(target string) (TargetState, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	ts, ok := s.Targets[target]
 	return ts, ok
 }
 
 // Set records target's latest known-good state.
 func (s *State) Set(target string, ts TargetState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.Targets == nil {
 		s.Targets = map[string]TargetState{}
 	}

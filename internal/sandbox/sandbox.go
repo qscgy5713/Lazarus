@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"lazarus/internal/config"
@@ -34,10 +35,15 @@ type Sandbox struct {
 	Engine config.Engine
 }
 
+// nameCounter disambiguates sandbox names started within the same
+// nanosecond — a real possibility once targets are verified in parallel,
+// where a UnixNano timestamp alone isn't guaranteed unique.
+var nameCounter atomic.Uint64
+
 // Start launches a container for engine using image and waits until the
 // database inside it is accepting connections.
 func Start(ctx context.Context, engine config.Engine, image string) (*Sandbox, error) {
-	name := fmt.Sprintf("lazarus-verify-%d", time.Now().UnixNano())
+	name := fmt.Sprintf("lazarus-verify-%d-%d", time.Now().UnixNano(), nameCounter.Add(1))
 
 	args := []string{"run", "--detach", "--name", name, "--rm"}
 	switch engine {

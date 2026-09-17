@@ -26,7 +26,7 @@ Lazarus 就是定期幫你跑那一次還原。
 5. 跑你定義的 SQL 斷言，確認資料真的在
 6. 拆掉容器
 
-全部通過 exit code 才是 0，方便直接塞進 cron 或 CI。
+全部通過 exit code 才是 0，方便直接塞進 cron 或 CI。多個目標預設會同時驗證（見下方「使用」一節的 `parallelism` 說明），彼此完全獨立、互不影響。
 
 ## 安裝
 
@@ -77,6 +77,8 @@ FAIL  production-mysql [checks] check "customers table is populated" failed: got
 | `LAZARUS_WEBHOOK_URL` | 通知用的 webhook URL，會覆寫設定檔裡的值（見下方「失敗通知」） |
 
 Lazarus 會在 `state_file`（預設 `lazarus-state.json`）記錄每個目標上一次「完整通過驗證」的備份大小，用來支援下方的「備份大小驟變偵測」。這個檔案可以隨時刪除——下次執行就會重新從零開始建立基準值。
+
+多個目標預設會同時驗證，最多 4 個一起跑（`parallelism`，可調整，設成 `1` 就變回一個一個跑）。每個目標本來就是完全獨立的（各自的 sandbox 容器，或各自的 SQLite 暫存複本），彼此不會互相干擾——只是縮短目標一多時整體要等的時間。輸出順序永遠跟設定檔裡的順序一致，跟實際完成的先後順序無關。
 
 Exit code：`0` 全部通過、`1` 有驗證失敗、`2` 設定檔或參數有問題。
 
