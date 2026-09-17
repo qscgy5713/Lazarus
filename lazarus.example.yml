@@ -3,6 +3,23 @@
 # Copy to lazarus.yml and adjust. Run with:
 #   lazarus --config lazarus.yml
 
+# Where to report a run's outcome. Without this, a 4am cron run that finds a
+# broken backup only says so through its exit code — and nobody reads that.
+notify:
+  # Leave empty to disable. Better: set LAZARUS_WEBHOOK_URL in the
+  # environment instead, so the URL never has to live in a file.
+  webhook_url: ""
+
+  # slack (default, also works for Mattermost etc.) | discord | generic
+  format: slack
+
+  # on_failure (default) | always | never
+  #
+  # "always" is worth considering: if Lazarus itself stops running — cron
+  # broken, machine down — silence looks exactly like healthy backups. A
+  # message on every run turns that silence into a signal.
+  when: on_failure
+
 targets:
   - name: production-postgres
     engine: postgres

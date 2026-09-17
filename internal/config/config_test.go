@@ -182,3 +182,103 @@ func TestLoadMissingFile(t *testing.T) {
 		t.Fatal("Load() error = nil, want an error for a missing file")
 	}
 }
+
+func TestNotifyDefaults(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: pg
+    engine: postgres
+    path: /backups/pg.sql
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Notify.WebhookURL != "" {
+		t.Errorf("WebhookURL = %q, want empty (notifications off by default)", cfg.Notify.WebhookURL)
+	}
+	if cfg.Notify.Format != defaultNotifyFormat {
+		t.Errorf("Format = %q, want %q", cfg.Notify.Format, defaultNotifyFormat)
+	}
+	if cfg.Notify.When != defaultNotifyWhen {
+		t.Errorf("When = %q, want %q", cfg.Notify.When, defaultNotifyWhen)
+	}
+}
+
+func TestNotifyFromConfigFile(t *testing.T) {
+	path := writeConfig(t, `
+notify:
+  webhook_url: https://hooks.example.com/abc
+  format: discord
+  when: always
+targets:
+  - name: pg
+    engine: postgres
+    path: /backups/pg.sql
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Notify.WebhookURL != "https://hooks.example.com/abc" {
+		t.Errorf("WebhookURL = %q", cfg.Notify.WebhookURL)
+	}
+	if cfg.Notify.Format != "discord" || cfg.Notify.When != "always" {
+		t.Errorf("Notify = %+v, want discord/always", cfg.Notify)
+	}
+}
+
+func TestWebhookURLEnvVarOverridesConfigFile(t *testing.T) {
+	// The URL is a secret; it should never have to live in a committed file.
+	t.Setenv(webhookURLEnvVar, "https://hooks.example.com/from-env")
+
+	path := writeConfig(t, `
+notify:
+  webhook_url: https://hooks.example.com/from-file
+targets:
+  - name: pg
+    engine: postgres
+    path: /backups/pg.sql
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Notify.WebhookURL != "https://hooks.example.com/from-env" {
+		t.Errorf("WebhookURL = %q, want the environment value to win", cfg.Notify.WebhookURL)
+	}
+}
+
+func TestNotifyRejectsUnknownFormatAndWhen(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{
+			name:    "bad format",
+			body:    "notify:\n  format: carrier-pigeon\ntargets:\n  - name: a\n    engine: postgres\n    path: /b.sql",
+			wantErr: "notify.format",
+		},
+		{
+			name:    "bad when",
+			body:    "notify:\n  when: sometimes\ntargets:\n  - name: a\n    engine: postgres\n    path: /b.sql",
+			wantErr: "notify.when",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, tc.body))
+			if err == nil {
+				t.Fatalf("Load() error = nil, want an error mentioning %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %q, want it to mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}

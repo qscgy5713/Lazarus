@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"lazarus/internal/config"
+	"lazarus/internal/notify"
 	"lazarus/internal/report"
 	"lazarus/internal/verify"
 )
@@ -52,8 +53,24 @@ func main() {
 		allPassed = report.Text(os.Stdout, results)
 	}
 
+	sendNotification(ctx, cfg.Notify, results)
+
 	if !allPassed {
 		os.Exit(1)
+	}
+}
+
+func sendNotification(ctx context.Context, cfg config.Notify, results []verify.Result) {
+	notifier := notify.New(cfg.WebhookURL, notify.Format(cfg.Format), notify.When(cfg.When))
+	if !notifier.ShouldSend(results) {
+		return
+	}
+
+	// A failed notification doesn't change the verification verdict, but it
+	// must be loud: silently losing the alert would leave the same blind
+	// spot this tool exists to close.
+	if err := notifier.Send(ctx, results); err != nil {
+		fmt.Fprintf(os.Stderr, "lazarus: WARNING: could not deliver notification: %v\n", err)
 	}
 }
 

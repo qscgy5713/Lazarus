@@ -68,6 +68,12 @@ FAIL  production-mysql [checks] check "customers table is populated" failed: got
 | `--target` | (全部) | 只驗證指定的一個目標 |
 | `--json` | `false` | 機器可讀的輸出，給 CI/腳本用 |
 
+環境變數：
+
+| 變數 | 說明 |
+|---|---|
+| `LAZARUS_WEBHOOK_URL` | 通知用的 webhook URL，會覆寫設定檔裡的值（見下方「失敗通知」） |
+
 Exit code：`0` 全部通過、`1` 有驗證失敗、`2` 設定檔或參數有問題。
 
 ## 設定
@@ -104,11 +110,40 @@ targets:
 | MySQL 純 SQL | `mysqldump` 的輸出 |
 | gzip 壓縮 | 以上任一種加上 `.gz`，串流解壓縮，不佔額外磁碟空間 |
 
+## 失敗通知
+
+只靠 exit code 的話，凌晨四點跑的 cron 發現備份壞了也沒人知道。設定 webhook 就能把結果送到 Slack / Discord：
+
+```yaml
+notify:
+  format: slack        # slack | discord | generic
+  when: on_failure     # on_failure | always | never
+```
+
+Webhook URL 建議用環境變數給，不要寫進設定檔：
+
+```bash
+LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx ./lazarus --config lazarus.yml
+```
+
+失敗時的訊息長這樣：
+
+```
+🔴 Lazarus: 1 of 2 backup(s) failed verification
+• empty-shell-backup failed at `checks`
+  check "users have rows" failed: got 0, want at least 1
+  backup: /backups/empty-shell.sql
+```
+
+**`when: always` 值得考慮**：如果 Lazarus 自己停止運作了（cron 壞掉、機器關機），「沒收到通知」看起來跟「備份都很健康」一模一樣。每次都發通知能把這種沉默變成訊號——這正是這個工具在別的地方幫你解決的問題，套在它自己身上。
+
+通知送不出去不會改變驗證的結果（exit code 仍然反映備份本身的狀態），但會在 stderr 明確警告，不會被靜默吞掉。
+
 ## 排進 cron
 
 ```cron
-# 每天早上 6 點驗證備份，失敗時 cron 會把輸出寄給你
-0 6 * * * cd /opt/lazarus && ./lazarus --config lazarus.yml
+# 每天早上 6 點驗證備份
+0 6 * * * cd /opt/lazarus && LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx ./lazarus --config lazarus.yml
 ```
 
 因為 exit code 有分好，也可以接到現有的監控系統上（例如

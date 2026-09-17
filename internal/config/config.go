@@ -18,8 +18,35 @@ const (
 )
 
 type Config struct {
+	Notify  Notify   `yaml:"notify"`
 	Targets []Target `yaml:"targets"`
 }
+
+// Notify controls where a run's outcome gets reported. Without it Lazarus
+// only speaks through its exit code, which nobody reads when it runs from
+// cron at 4am.
+type Notify struct {
+	// WebhookURL is empty by default (notifications off). The
+	// LAZARUS_WEBHOOK_URL environment variable overrides it, so the URL
+	// doesn't have to live in a file.
+	WebhookURL string `yaml:"webhook_url"`
+
+	// Format is "slack" (default), "discord", or "generic" (raw JSON).
+	Format string `yaml:"format"`
+
+	// When is "on_failure" (default), "always", or "never".
+	//
+	// "always" is worth considering: if Lazarus itself stops running, no
+	// message looks exactly like every backup being fine.
+	When string `yaml:"when"`
+}
+
+const webhookURLEnvVar = "LAZARUS_WEBHOOK_URL"
+
+const (
+	defaultNotifyFormat = "slack"
+	defaultNotifyWhen   = "on_failure"
+)
 
 // Target is one backup to verify: where to find it, what to restore it into,
 // and what must be true afterwards for the backup to count as usable.
@@ -81,6 +108,10 @@ func (c *Config) applyDefaultsAndValidate() error {
 		return fmt.Errorf("config has no targets")
 	}
 
+	if err := c.applyNotifyDefaults(); err != nil {
+		return err
+	}
+
 	seen := make(map[string]bool, len(c.Targets))
 	for i := range c.Targets {
 		t := &c.Targets[i]
@@ -118,6 +149,33 @@ func (c *Config) applyDefaultsAndValidate() error {
 			}
 		}
 	}
+	return nil
+}
+
+func (c *Config) applyNotifyDefaults() error {
+	// The environment wins so a webhook URL never has to be committed.
+	if fromEnv := os.Getenv(webhookURLEnvVar); fromEnv != "" {
+		c.Notify.WebhookURL = fromEnv
+	}
+
+	if c.Notify.Format == "" {
+		c.Notify.Format = defaultNotifyFormat
+	}
+	switch c.Notify.Format {
+	case "slack", "discord", "generic":
+	default:
+		return fmt.Errorf("notify.format %q is not slack, discord or generic", c.Notify.Format)
+	}
+
+	if c.Notify.When == "" {
+		c.Notify.When = defaultNotifyWhen
+	}
+	switch c.Notify.When {
+	case "on_failure", "always", "never":
+	default:
+		return fmt.Errorf("notify.when %q is not on_failure, always or never", c.Notify.When)
+	}
+
 	return nil
 }
 
