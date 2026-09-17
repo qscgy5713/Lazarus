@@ -1,0 +1,46 @@
+# Lazarus config — each target is one backup you want proven restorable.
+#
+# Copy to lazarus.yml and adjust. Run with:
+#   lazarus --config lazarus.yml
+
+targets:
+  - name: production-postgres
+    engine: postgres
+
+    # Plain path or a glob. With a glob, the most recently modified match is
+    # used — that's the file you'd actually restore in an emergency.
+    path: /backups/postgres/shop-*.sql.gz
+
+    # Fail if the newest backup is older than this. A backup that restores
+    # perfectly but is three weeks old is still a failed backup.
+    max_age: 26h
+
+    # Sandbox image. Match your production major version — a dump from
+    # Postgres 16 won't restore into 14.
+    image: postgres:16-alpine
+
+    # The restore "succeeding" isn't enough: a schema-only dump restores
+    # fine and leaves you with an empty database. These assertions are what
+    # prove the backup carries real data.
+    checks:
+      - name: users table is populated
+        sql: SELECT count(*) FROM users
+        expect_min: 1
+
+      - name: orders from the last week made it in
+        sql: SELECT count(*) FROM orders WHERE created_at > now() - interval '7 days'
+        expect_min: 1
+
+      - name: no half-migrated schema
+        sql: SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'
+        expect_min: 10
+
+  - name: production-mysql
+    engine: mysql
+    path: /backups/mysql/app-latest.sql
+    max_age: 26h
+    image: mysql:8
+    checks:
+      - name: customers table is populated
+        sql: SELECT count(*) FROM customers
+        expect_min: 1

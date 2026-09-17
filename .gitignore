@@ -1,0 +1,4 @@
+/lazarus
+
+# Real configs point at real backup paths — only the example belongs in git.
+lazarus.yml

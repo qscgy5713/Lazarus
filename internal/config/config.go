@@ -1,0 +1,145 @@
+// Package config parses the YAML file describing which backups to verify
+// and what "a good restore" means for each of them.
+package config
+
+import (
+	"fmt"
+	"os"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+type Engine string
+
+const (
+	EnginePostgres Engine = "postgres"
+	EngineMySQL    Engine = "mysql"
+)
+
+type Config struct {
+	Targets []Target `yaml:"targets"`
+}
+
+// Target is one backup to verify: where to find it, what to restore it into,
+// and what must be true afterwards for the backup to count as usable.
+type Target struct {
+	Name   string `yaml:"name"`
+	Engine Engine `yaml:"engine"`
+
+	// Path to the backup file. May be a glob (e.g. "/backups/db-*.sql.gz"),
+	// in which case the most recently modified match is used — that's the
+	// one a restore would actually reach for in an emergency.
+	Path string `yaml:"path"`
+
+	// MaxAge fails the target if the newest backup is older than this. A
+	// restorable backup from three months ago is still a failed backup.
+	MaxAge time.Duration `yaml:"max_age"`
+
+	// Image is the container image used as the throwaway restore sandbox.
+	// Defaults per engine if empty.
+	Image string `yaml:"image"`
+
+	Checks []Check `yaml:"checks"`
+}
+
+// Check is a SQL assertion run against the restored database. Exactly one of
+// the expectations should be set; a query returning a single numeric value is
+// compared against it.
+type Check struct {
+	Name  string `yaml:"name"`
+	SQL   string `yaml:"sql"`
+	Min   *int64 `yaml:"expect_min"`
+	Max   *int64 `yaml:"expect_max"`
+	Equal *int64 `yaml:"expect_equal"`
+}
+
+const (
+	defaultPostgresImage = "postgres:16-alpine"
+	defaultMySQLImage    = "mysql:8"
+)
+
+func Load(path string) (*Config, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	if err := cfg.applyDefaultsAndValidate(); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+func (c *Config) applyDefaultsAndValidate() error {
+	if len(c.Targets) == 0 {
+		return fmt.Errorf("config has no targets")
+	}
+
+	seen := make(map[string]bool, len(c.Targets))
+	for i := range c.Targets {
+		t := &c.Targets[i]
+
+		if t.Name == "" {
+			return fmt.Errorf("target %d: name is required", i)
+		}
+		if seen[t.Name] {
+			return fmt.Errorf("duplicate target name %q", t.Name)
+		}
+		seen[t.Name] = true
+
+		if t.Path == "" {
+			return fmt.Errorf("target %q: path is required", t.Name)
+		}
+
+		switch t.Engine {
+		case EnginePostgres:
+			if t.Image == "" {
+				t.Image = defaultPostgresImage
+			}
+		case EngineMySQL:
+			if t.Image == "" {
+				t.Image = defaultMySQLImage
+			}
+		case "":
+			return fmt.Errorf("target %q: engine is required (postgres or mysql)", t.Name)
+		default:
+			return fmt.Errorf("target %q: unsupported engine %q (expected postgres or mysql)", t.Name, t.Engine)
+		}
+
+		for j := range t.Checks {
+			if err := validateCheck(t.Name, j, &t.Checks[j]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateCheck(targetName string, index int, c *Check) error {
+	if c.SQL == "" {
+		return fmt.Errorf("target %q check %d: sql is required", targetName, index)
+	}
+	if c.Name == "" {
+		c.Name = c.SQL
+	}
+
+	expectations := 0
+	for _, set := range []bool{c.Min != nil, c.Max != nil, c.Equal != nil} {
+		if set {
+			expectations++
+		}
+	}
+	if expectations == 0 {
+		return fmt.Errorf("target %q check %q: needs one of expect_min, expect_max or expect_equal", targetName, c.Name)
+	}
+	if c.Equal != nil && (c.Min != nil || c.Max != nil) {
+		return fmt.Errorf("target %q check %q: expect_equal can't be combined with expect_min/expect_max", targetName, c.Name)
+	}
+	return nil
+}
