@@ -30,7 +30,7 @@ Lazarus 就是定期幫你跑那一次還原。
 
 ## 安裝
 
-需要 Go 1.27+ 跟本機可用的 Docker。
+需要 Go 1.27+。驗證 PostgreSQL / MySQL 備份需要本機可用的 Docker；SQLite 不需要。
 
 ```bash
 git clone https://github.com/qscgy5713/Lazarus.git
@@ -87,7 +87,7 @@ Exit code：`0` 全部通過、`1` 有驗證失敗、`2` 設定檔或參數有�
 ```yaml
 targets:
   - name: production-postgres
-    engine: postgres                # postgres 或 mysql
+    engine: postgres                # postgres、mysql 或 sqlite
     path: /backups/shop-*.sql.gz    # 支援 glob，取最新的
     max_age: 26h                    # 超過這個年齡就算失敗
     max_restore_duration: 2h        # 還原本身超過這個時間就算失敗（見下方 RTO 說明）
@@ -142,7 +142,25 @@ size_drift:
 | PostgreSQL 純 SQL | `pg_dump` 的預設輸出，用 `psql` 還原 |
 | PostgreSQL 自訂格式 | `pg_dump -Fc`，自動偵測（`PGDMP` 魔術位元組）並改用 `pg_restore` |
 | MySQL 純 SQL | `mysqldump` 的輸出 |
+| SQLite | 資料庫檔案本身的完整複本（不是 `.dump` 出來的 SQL 文字），沒有伺服器可以匯入，本來就是一個獨立檔案 |
 | gzip 壓縮 | 以上任一種加上 `.gz`，串流解壓縮，不佔額外磁碟空間 |
+
+### SQLite 不需要 Docker
+
+PostgreSQL / MySQL 的備份是 SQL 文字，需要一個真的資料庫伺服器把它「還原」回去才能驗證。SQLite 的備份直接就是資料庫檔案本身——沒有匯入這一步。所以驗證 SQLite 目標時，Lazarus 完全不會碰 Docker：把備份複製（視需要先解壓縮）到一個用完即丟的暫存檔案，對這份複本跑 SQLite 自己的 `PRAGMA integrity_check`，再執行你設定的 checks。
+
+```yaml
+targets:
+  - name: local-sqlite
+    engine: sqlite
+    path: /backups/sqlite/app-*.db
+    checks:
+      - name: users table is populated
+        sql: SELECT count(*) FROM users
+        expect_min: 1
+```
+
+`max_age`、`max_restore_duration`、`size_drift` 這些設定對 SQLite 目標一樣有效——只有 `image` 用不到（沒有容器）。
 
 ## 失敗通知
 
@@ -193,6 +211,8 @@ LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx ./lazarus --config laza
 
 **為什麼備份大小驟變偵測要另外存一個 state 檔，而不是塞進 checks？** checks 斷言的是「這次還原出來的資料庫」，天生沒有「跟上一次比較」的概念——它甚至不知道有沒有上一次。大小驟變偵測本質上是跨執行週期的比較，需要一個地方記住歷史，所以獨立成一個輕量的 JSON 檔，壞掉或刪除都不影響核心的還原驗證，只是重新歸零基準值而已。
 
+**SQLite 為什麼不用 Docker 容器？** 因為 Docker 容器解決的問題（一個乾淨的伺服器可以把 SQL 匯入進去）對 SQLite 根本不存在——SQLite 的備份本身就是一份完整、獨立的資料庫檔案，沒有「匯入」這一步，複製到別處就已經是一份乾淨的副本了。硬是包一層容器只會多一份不必要的複雜度，不會多驗證到任何東西。
+
 ## 開發
 
 ```bash
@@ -200,4 +220,4 @@ go test ./... -race    # 單元測試，不需要 Docker
 go build ./...
 ```
 
-端對端測試需要 Docker，會實際起容器、產生真實的 dump 再還原——這個工具的核心價值就是「真的跑一次」，所以驗證方式也一樣。
+PostgreSQL / MySQL 的端對端測試需要 Docker，會實際起容器、產生真實的 dump 再還原——這個工具的核心價值就是「真的跑一次」，所以驗證方式也一樣。SQLite 不需要 Docker，`go test` 裡就有跑真正的 `sqlite3` CLI、真的資料庫檔案的端對端測試（本機沒裝 `sqlite3` 會自動跳過）。

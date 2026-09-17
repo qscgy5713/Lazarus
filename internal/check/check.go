@@ -56,6 +56,14 @@ func run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, c confi
 	return result
 }
 
+// Evaluate is the same pass/fail comparison run() uses, exported so a
+// verification path that doesn't run checks through a sandbox (sqlitecheck,
+// which queries a file directly) can still share the exact same logic.
+func Evaluate(value int64, c config.Check) (bool, string) { return evaluate(value, c) }
+
+// ParseScalar is exported for the same reason as Evaluate.
+func ParseScalar(raw string) (int64, error) { return parseScalar(raw) }
+
 func evaluate(value int64, c config.Check) (bool, string) {
 	switch {
 	case c.Equal != nil && value != *c.Equal:

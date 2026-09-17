@@ -84,3 +84,18 @@ targets:
       - name: customers table is populated
         sql: SELECT count(*) FROM customers
         expect_min: 1
+
+  - name: local-sqlite
+    engine: sqlite
+
+    # A SQLite backup is a full copy of the .db file itself (optionally
+    # gzipped), not a SQL dump — there's no server to import a dump into.
+    path: /backups/sqlite/app-*.db
+
+    # No sandbox container and no `image` — the backup file already is the
+    # database. "Restoring" it is just copying it somewhere disposable and
+    # running SQLite's own integrity check on the copy.
+    checks:
+      - name: users table is populated
+        sql: SELECT count(*) FROM users
+        expect_min: 1

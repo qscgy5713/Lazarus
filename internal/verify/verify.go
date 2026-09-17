@@ -13,6 +13,7 @@ import (
 	"lazarus/internal/config"
 	"lazarus/internal/restore"
 	"lazarus/internal/sandbox"
+	"lazarus/internal/sqlitecheck"
 	"lazarus/internal/state"
 )
 
@@ -77,21 +78,54 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 		}
 	}
 
-	result.Stage = StageSandbox
-	sb, err := sandbox.Start(ctx, target.Engine, target.Image)
-	if err != nil {
-		result.Err = err
-		return finish()
-	}
-	defer sb.Stop()
+	// Everything past this point differs only in how a target gets "restored"
+	// and how its checks run against the result: a container plus a real
+	// client for Postgres/MySQL, or just a disposable file copy for SQLite.
+	// runChecks is filled in by whichever path succeeds. RestoreDuration is
+	// timed inside each branch, starting only once any container is already
+	// up — sandbox startup isn't part of the restore this metric promises to
+	// report (see max_restore_duration in the README).
+	var runChecks func(context.Context) []check.Result
 
-	result.Stage = StageRestore
-	restoreStarted := time.Now()
-	if _, err := restore.Run(ctx, sb, target.Engine, file); err != nil {
-		result.Err = err
-		return finish()
+	if target.Engine == config.EngineSQLite {
+		result.Stage = StageRestore
+		restoreStarted := time.Now()
+
+		path, cleanup, err := sqlitecheck.Prepare(file)
+		if err != nil {
+			result.Err = err
+			return finish()
+		}
+		defer cleanup()
+
+		if err := sqlitecheck.IntegrityCheck(ctx, path); err != nil {
+			result.Err = err
+			return finish()
+		}
+		result.RestoreDuration = time.Since(restoreStarted)
+		runChecks = func(ctx context.Context) []check.Result {
+			return sqlitecheck.RunChecks(ctx, path, target.Checks)
+		}
+	} else {
+		result.Stage = StageSandbox
+		sb, err := sandbox.Start(ctx, target.Engine, target.Image)
+		if err != nil {
+			result.Err = err
+			return finish()
+		}
+		defer sb.Stop()
+
+		result.Stage = StageRestore
+		restoreStarted := time.Now()
+		if _, err := restore.Run(ctx, sb, target.Engine, file); err != nil {
+			result.Err = err
+			return finish()
+		}
+		result.RestoreDuration = time.Since(restoreStarted)
+		runChecks = func(ctx context.Context) []check.Result {
+			return check.RunAll(ctx, sb, target.Engine, target.Checks)
+		}
 	}
-	result.RestoreDuration = time.Since(restoreStarted)
 
 	result.Stage = StageRTO
 	if exceedsRTO(result.RestoreDuration, target.MaxRestoreDuration) {
@@ -100,7 +134,7 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 	}
 
 	result.Stage = StageChecks
-	result.Checks = check.RunAll(ctx, sb, target.Engine, target.Checks)
+	result.Checks = runChecks(ctx)
 	for _, c := range result.Checks {
 		if !c.Passed {
 			result.Err = fmt.Errorf("check %q failed: %s", c.Name, c.Reason)

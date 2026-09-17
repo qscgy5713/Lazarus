@@ -73,6 +73,25 @@ targets:
 	}
 }
 
+func TestLoadAcceptsSQLiteWithNoImage(t *testing.T) {
+	// SQLite needs no sandbox container, so it should neither require an
+	// image nor have one defaulted for it.
+	path := writeConfig(t, `
+targets:
+  - name: local
+    engine: sqlite
+    path: /backups/app.db
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Targets[0].Image != "" {
+		t.Errorf("Image = %q, want empty for a sqlite target", cfg.Targets[0].Image)
+	}
+}
+
 func TestLoadKeepsExplicitImage(t *testing.T) {
 	path := writeConfig(t, `
 targets:

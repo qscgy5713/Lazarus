@@ -15,6 +15,10 @@ type Engine string
 const (
 	EnginePostgres Engine = "postgres"
 	EngineMySQL    Engine = "mysql"
+	// EngineSQLite needs no sandbox container: a SQLite backup is already a
+	// complete, self-contained database file, so verifying it is just
+	// copying that file somewhere disposable and querying it directly.
+	EngineSQLite Engine = "sqlite"
 )
 
 type Config struct {
@@ -174,10 +178,12 @@ func (c *Config) applyDefaultsAndValidate() error {
 			if t.Image == "" {
 				t.Image = defaultMySQLImage
 			}
+		case EngineSQLite:
+			// No sandbox container, so no image to default.
 		case "":
-			return fmt.Errorf("target %q: engine is required (postgres or mysql)", t.Name)
+			return fmt.Errorf("target %q: engine is required (postgres, mysql or sqlite)", t.Name)
 		default:
-			return fmt.Errorf("target %q: unsupported engine %q (expected postgres or mysql)", t.Name, t.Engine)
+			return fmt.Errorf("target %q: unsupported engine %q (expected postgres, mysql or sqlite)", t.Name, t.Engine)
 		}
 
 		if t.SizeDrift != nil {
