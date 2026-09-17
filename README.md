@@ -71,6 +71,7 @@ FAIL  production-mysql [checks] check "customers table is populated" failed: got
 | `--target` | (全部) | 只驗證指定的一個目標 |
 | `--json` | `false` | 機器可讀的輸出，給 CI/腳本用 |
 | `--keep-on-failure` | `false` | 目標失敗時保留 sandbox 容器（或 SQLite 暫存檔）不清掉，方便直接連進去查資料（見下方「保留失敗現場除錯」） |
+| `--check-config` | `false` | 只檢查設定檔對不對就結束，不抓備份、不還原、完全不碰 Docker（見下方「設定檔檢查」） |
 
 環境變數：
 
@@ -103,6 +104,35 @@ FAIL  shop [checks] check "users populated" failed: got 0, want at least 1
 - 只有**失敗**的目標會保留，通過的目標一律照常清掉，不會留下一堆用不到的容器
 - 保留下來的容器**不會自動清理**，用完要自己 `docker rm -f`（或刪掉印出的 SQLite 暫存檔路徑）——這是刻意的除錯用選項，不是預設行為
 - sandbox 容器沒有對外開放連接埠，所以是透過 `docker exec` 連進容器內部查詢，不是從外部直接用 psql/mysql 連線
+
+### 設定檔檢查
+
+設定選項一多，打錯字、漏填、選項之間互相矛盾這些問題，現在得等真的跑一次（可能要先跑完 `fetch_command`、起完 Docker 容器）才會發現。`--check-config` 只做語法跟邏輯檢查就結束：
+
+```bash
+lazarus --config lazarus.yml --check-config
+```
+
+```
+lazarus: config OK — 2 target(s), parallelism 4, state file "lazarus-state.json"
+notify: format=slack when=on_failure webhook=not set
+
+- production-postgres (postgres)
+    path: /backups/shop-*.sql.gz
+    image: postgres:16-alpine
+    max_age: 26h0m0s
+    max_restore_duration: 2h0m0s
+    size_drift: max_decrease_pct=50%
+    checks: 3
+
+- local-sqlite (sqlite)
+    path: /backups/app.db
+    checks: 1
+```
+
+輸出的不只是「有沒有錯」，還包含實際生效的值——像是套用了哪個預設 image、`fetch_timeout` 沒設定時實際會是多少——這些原本要等真的執行過一次才看得到。
+
+`--check-config` 完全不會執行 `fetch_command`、不會啟動任何 Docker 容器、也不會去看 `path` 指到的檔案存不存在——這些都要等真的執行才驗證得到，故意留給真正的驗證，適合放進 CI 快速檢查設定檔改動有沒有寫錯。Exit code 跟平常一樣：`0` 設定沒問題、`2` 設定有誤。可以搭配 `--target` 只檢查單一目標，也吃 `--json` 印出機器可讀的版本（給要用腳本解析結果的 CI 步驟用）。
 
 ## 設定
 
@@ -241,6 +271,13 @@ LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx ./lazarus --config laza
 因為 exit code 有分好，也可以接到現有的監控系統上（例如
 [ChronosMonitor](https://github.com/qscgy5713/ChronosMonitor) 之類的任務監控工具）。
 
+在 CI 裡對設定檔改動跑一次快速檢查，不需要 Docker：
+
+```yaml
+# .github/workflows 之類的地方
+- run: lazarus --config lazarus.yml --check-config
+```
+
 ## 設計上的取捨
 
 **為什麼用 Docker 容器而不是連到現有的測試資料庫？** 因為「乾淨」是驗證的前提。如果還原到一個已經有資料的資料庫，`SELECT count(*) FROM users` 回傳 100 根本無法判斷那是備份帶來的還是本來就在的。用完即丟的容器保證每次都從零開始。
@@ -256,6 +293,8 @@ LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx ./lazarus --config laza
 **為什麼 `fetch_command` 是一段 shell 指令，不是內建 S3/SFTP 客戶端？** 遠端儲存的種類沒有上限——S3、GCS、Azure Blob、公司內部的備份 API、單純一台用 scp 就能連的主機——每加一種都要新增一套設定選項跟一份程式碼，而且永遠追不完。讓使用者直接貼上自己已經在用的那行指令，Lazarus 不用認得任何一種儲存後端，也永遠不會漏掉某個團隊在用的冷門方案。
 
 **為什麼 `--keep-on-failure` 保留下來的容器不會自動清掉？** 因為這個選項存在的唯一理由就是讓人有機會進去看——如果保留幾秒鐘後又自動拆掉，等於沒留。清理的責任交給使用者是刻意的：這是一個明確選用的除錯工具，不是預設行為，用的人本來就該預期要自己收尾。
+
+**`--check-config` 為什麼不順便檢查 `path` 指到的檔案存不存在？** 因為這條界線畫在哪裡很清楚：`config.Load` 能做的是純粹看設定檔本身寫得對不對，跟環境完全無關；而檔案存不存在、`fetch_command` 抓不抓得到、Docker 起不起得來，答案都取決於「在哪台機器上跑」。在筆電上檢查一份要放到正式環境跑的設定檔時，備份檔案本來就不會在筆電上——這不代表設定檔寫錯了，混進來檢查反而會製造一堆假警報。
 
 ## 開發
 

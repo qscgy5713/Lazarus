@@ -5,8 +5,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,6 +25,7 @@ func main() {
 	targetName := flag.String("target", "", "verify only this target (default: all)")
 	asJSON := flag.Bool("json", false, "machine-readable output")
 	keepOnFailure := flag.Bool("keep-on-failure", false, "keep a failing target's sandbox container (or SQLite temp file) instead of tearing it down, for manual inspection")
+	checkConfig := flag.Bool("check-config", false, "validate the config file and exit, without fetching, restoring, or touching Docker")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -38,6 +41,20 @@ func main() {
 			fmt.Fprintf(os.Stderr, "lazarus: %v\n", err)
 			os.Exit(2)
 		}
+	}
+
+	if *checkConfig {
+		// config.Load already ran every syntax/logic check it has (unique
+		// names, valid engine, exactly-one check expectation, and so on) —
+		// getting this far at all means the config is valid. What's left is
+		// showing the defaults it resolved, since those are otherwise only
+		// visible once something actually runs.
+		if *asJSON {
+			printConfigSummaryJSON(os.Stdout, cfg, targets)
+		} else {
+			printConfigSummary(os.Stdout, cfg, targets)
+		}
+		return
 	}
 
 	// Ctrl-C has to reach the verify run so its deferred sandbox teardown
@@ -87,6 +104,108 @@ func sendNotification(ctx context.Context, cfg config.Notify, results []verify.R
 	if err := notifier.Send(ctx, results); err != nil {
 		fmt.Fprintf(os.Stderr, "lazarus: WARNING: could not deliver notification: %v\n", err)
 	}
+}
+
+// printConfigSummary reports what --check-config actually confirmed: not
+// just "no error", but the values (including resolved defaults like a
+// per-engine sandbox image or the 5-minute fetch timeout) that a real run
+// would otherwise only reveal once something started fetching or restoring.
+func printConfigSummary(w io.Writer, cfg *config.Config, targets []config.Target) {
+	fmt.Fprintf(w, "lazarus: config OK — %d target(s), parallelism %d, state file %q\n",
+		len(targets), cfg.Parallelism, cfg.StateFile)
+
+	webhook := "not set"
+	if cfg.Notify.WebhookURL != "" {
+		webhook = "set"
+	}
+	fmt.Fprintf(w, "notify: format=%s when=%s webhook=%s\n", cfg.Notify.Format, cfg.Notify.When, webhook)
+
+	for _, t := range targets {
+		fmt.Fprintf(w, "\n- %s (%s)\n", t.Name, t.Engine)
+		fmt.Fprintf(w, "    path: %s\n", t.Path)
+		if t.FetchCommand != "" {
+			fmt.Fprintf(w, "    fetch_command: %s (timeout %s)\n", t.FetchCommand, t.FetchTimeout)
+		}
+		if t.Image != "" {
+			fmt.Fprintf(w, "    image: %s\n", t.Image)
+		}
+		if t.MaxAge > 0 {
+			fmt.Fprintf(w, "    max_age: %s\n", t.MaxAge)
+		}
+		if t.MaxRestoreDuration > 0 {
+			fmt.Fprintf(w, "    max_restore_duration: %s\n", t.MaxRestoreDuration)
+		}
+		if t.SizeDrift != nil {
+			fmt.Fprintf(w, "    size_drift: max_decrease_pct=%.0f%%\n", t.SizeDrift.MaxDecreasePct)
+		}
+		fmt.Fprintf(w, "    checks: %d\n", len(t.Checks))
+	}
+}
+
+type configSummaryJSON struct {
+	Parallelism int                       `json:"parallelism"`
+	StateFile   string                    `json:"state_file"`
+	Notify      configSummaryNotifyJSON   `json:"notify"`
+	Targets     []configSummaryTargetJSON `json:"targets"`
+}
+
+type configSummaryNotifyJSON struct {
+	Format     string `json:"format"`
+	When       string `json:"when"`
+	WebhookSet bool   `json:"webhook_set"`
+}
+
+type configSummaryTargetJSON struct {
+	Name                    string  `json:"name"`
+	Engine                  string  `json:"engine"`
+	Path                    string  `json:"path"`
+	FetchCommand            string  `json:"fetch_command,omitempty"`
+	FetchTimeoutMs          int64   `json:"fetch_timeout_ms,omitempty"`
+	Image                   string  `json:"image,omitempty"`
+	MaxAgeMs                int64   `json:"max_age_ms,omitempty"`
+	MaxRestoreDurationMs    int64   `json:"max_restore_duration_ms,omitempty"`
+	SizeDriftMaxDecreasePct float64 `json:"size_drift_max_decrease_pct,omitempty"`
+	Checks                  int     `json:"checks"`
+}
+
+// printConfigSummaryJSON is --check-config's machine-readable counterpart to
+// printConfigSummary — --json is documented as "machine-readable output,
+// for CI/scripts", and silently falling back to the human-readable text
+// whenever it's combined with --check-config would quietly break exactly
+// the CI pipelines --check-config is for.
+func printConfigSummaryJSON(w io.Writer, cfg *config.Config, targets []config.Target) {
+	out := configSummaryJSON{
+		Parallelism: cfg.Parallelism,
+		StateFile:   cfg.StateFile,
+		Notify: configSummaryNotifyJSON{
+			Format:     cfg.Notify.Format,
+			When:       cfg.Notify.When,
+			WebhookSet: cfg.Notify.WebhookURL != "",
+		},
+		Targets: make([]configSummaryTargetJSON, 0, len(targets)),
+	}
+
+	for _, t := range targets {
+		jt := configSummaryTargetJSON{
+			Name:                 t.Name,
+			Engine:               string(t.Engine),
+			Path:                 t.Path,
+			FetchCommand:         t.FetchCommand,
+			FetchTimeoutMs:       t.FetchTimeout.Milliseconds(),
+			Image:                t.Image,
+			MaxAgeMs:             t.MaxAge.Milliseconds(),
+			MaxRestoreDurationMs: t.MaxRestoreDuration.Milliseconds(),
+			Checks:               len(t.Checks),
+		}
+		if t.SizeDrift != nil {
+			jt.SizeDriftMaxDecreasePct = t.SizeDrift.MaxDecreasePct
+		}
+		out.Targets = append(out.Targets, jt)
+	}
+
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(out)
 }
 
 func filterTarget(targets []config.Target, name string) ([]config.Target, error) {
