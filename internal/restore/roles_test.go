@@ -109,3 +109,29 @@ func TestScanRolesHandlesLongDataLines(t *testing.T) {
 		t.Errorf("scanRoles() = %v, want [app_user] even with a huge data line", got)
 	}
 }
+
+func TestScanRolesFindsGrantAfterLineOverflowingTheScanBuffer(t *testing.T) {
+	// Regression test: a real pg_dump puts GRANT statements at the very end
+	// of the file, after all COPY data. A single row wider than
+	// maxRoleScanLine used to make the old bufio.Scanner-based scan give up
+	// silently on the spot — so this GRANT, and every line after it, was
+	// never seen, and a perfectly good backup's restore later failed with
+	// "role does not exist".
+	hugeRow := strings.Repeat("x", maxRoleScanLine+(1024*1024))
+	dump := "COPY t (blob) FROM stdin;\n" + hugeRow + "\n\\.\n" +
+		"GRANT SELECT ON t TO readonly_user;\n"
+
+	got := scanRoles(strings.NewReader(dump))
+	if len(got) != 1 || got[0] != "readonly_user" {
+		t.Errorf("scanRoles() = %v, want [readonly_user] found after the oversized line", got)
+	}
+}
+
+func TestScanRolesHandlesFileEndingWithoutTrailingNewline(t *testing.T) {
+	dump := "ALTER TABLE t OWNER TO app_user;"
+
+	got := scanRoles(strings.NewReader(dump))
+	if len(got) != 1 || got[0] != "app_user" {
+		t.Errorf("scanRoles() = %v, want [app_user] even without a trailing newline", got)
+	}
+}

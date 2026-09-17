@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"lazarus/internal/verify"
 )
@@ -187,5 +188,13 @@ func truncate(s string) string {
 	if len(s) <= maxMessageLen {
 		return s
 	}
-	return s[:maxMessageLen] + "… (truncated)"
+
+	// Back off to the nearest rune boundary so a multi-byte character
+	// (Chinese text, an emoji) straddling the cutoff isn't split in half —
+	// that would leave an invalid UTF-8 byte sequence in the JSON payload.
+	cut := maxMessageLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "… (truncated)"
 }

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"lazarus/internal/backup"
 	"lazarus/internal/verify"
@@ -145,6 +146,23 @@ func TestFormatMessageTruncatesRunawayOutput(t *testing.T) {
 	}
 	if !strings.Contains(msg, "truncated") {
 		t.Error("a truncated message should say so")
+	}
+}
+
+func TestTruncateNeverSplitsAMultiByteRune(t *testing.T) {
+	// Regression test: truncating by raw byte offset used to have a real
+	// chance of landing inside a multi-byte UTF-8 character (Chinese text,
+	// an emoji) whenever the cutoff fell in the middle of one, leaving an
+	// invalid byte sequence in the outgoing JSON payload.
+	for cut := maxMessageLen - 2; cut <= maxMessageLen+2; cut++ {
+		prefix := strings.Repeat("a", cut)
+		s := prefix + "中文內容"
+
+		got := truncate(s)
+
+		if !utf8.ValidString(got) {
+			t.Fatalf("cut=%d: truncate produced invalid UTF-8: %q", cut, got)
+		}
 	}
 }
 
