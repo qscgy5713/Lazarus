@@ -3,6 +3,12 @@
 # Copy to lazarus.yml and adjust. Run with:
 #   lazarus --config lazarus.yml
 
+# Where Lazarus remembers each target's last known-good backup size, so it
+# can tell a real drift from noise across separate cron runs. Defaults to
+# lazarus-state.json next to wherever the tool runs from; safe to delete —
+# the next run just re-establishes baselines from scratch.
+state_file: lazarus-state.json
+
 # Where to report a run's outcome. Without this, a 4am cron run that finds a
 # broken backup only says so through its exit code — and nobody reads that.
 notify:
@@ -39,6 +45,15 @@ targets:
     # the first time during an actual incident. Omit for no limit; the
     # duration is reported either way.
     max_restore_duration: 2h
+
+    # Fail if the newest backup is more than this much smaller than the last
+    # backup that fully passed verification. Catches a silently shrinking
+    # export (a filter added upstream, a truncated dump) even when every
+    # check below still passes against whatever data is left. Omit to skip
+    # this check; a target's first-ever run always just establishes the
+    # baseline rather than failing.
+    size_drift:
+      max_decrease_pct: 50
 
     # Sandbox image. Match your production major version — a dump from
     # Postgres 16 won't restore into 14.

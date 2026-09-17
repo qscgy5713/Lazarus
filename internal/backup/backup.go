@@ -35,6 +35,20 @@ func (f File) Age(now time.Time) time.Duration {
 	return now.Sub(f.ModTime)
 }
 
+// HumanSize renders a byte count the way a person reads it, e.g. "14.4 KB".
+func HumanSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
 // Locate resolves pattern (a plain path or a glob) to the most recently
 // modified match. Newest wins because that's the one you'd actually restore
 // in an emergency — verifying an older file would prove the wrong thing.

@@ -76,6 +76,8 @@ FAIL  production-mysql [checks] check "customers table is populated" failed: got
 |---|---|
 | `LAZARUS_WEBHOOK_URL` | 通知用的 webhook URL，會覆寫設定檔裡的值（見下方「失敗通知」） |
 
+Lazarus 會在 `state_file`（預設 `lazarus-state.json`）記錄每個目標上一次「完整通過驗證」的備份大小，用來支援下方的「備份大小驟變偵測」。這個檔案可以隨時刪除——下次執行就會重新從零開始建立基準值。
+
 Exit code：`0` 全部通過、`1` 有驗證失敗、`2` 設定檔或參數有問題。
 
 ## 設定
@@ -89,6 +91,8 @@ targets:
     path: /backups/shop-*.sql.gz    # 支援 glob，取最新的
     max_age: 26h                    # 超過這個年齡就算失敗
     max_restore_duration: 2h        # 還原本身超過這個時間就算失敗（見下方 RTO 說明）
+    size_drift:
+      max_decrease_pct: 50          # 比上次「完整通過」的備份小超過 50% 就算失敗（見下方說明）
     image: postgres:16-alpine       # sandbox 用的 image，要對應你的正式版本
     checks:
       - name: users table is populated
@@ -113,6 +117,23 @@ max_restore_duration: 2h   # 服務最多只能忍受停機 2 小時，還原超
 ```
 
 不設也沒關係，還原耗時每次都會顯示在輸出裡（`restore took: 1m42s`），純粹當參考資訊。
+
+### 備份大小驟變偵測
+
+checks 只能回答「有沒有資料」，答不了「資料量有沒有不對勁地變少」。如果上游的備份腳本被誰改壞了（例如不小心加了個過濾條件、只匯出了一部分資料表），還原出來的資料庫可能剛好還是能通過 `expect_min: 1` 這種寬鬆的斷言——表不是空的，只是資料少了 95%。
+
+```yaml
+size_drift:
+  max_decrease_pct: 50   # 比上一次「完整通過驗證」的備份小超過 50% 就算失敗
+```
+
+比較基準是**上一次完整通過驗證**（還原成功、所有 checks 也過）的備份大小，記錄在 `state_file` 裡。這代表：
+
+- 目標第一次執行時還沒有基準值，只會建立基準，不會失敗
+- 只有失敗的那次不會更新基準值——一份真的壞掉的備份不會把及格線悄悄拉低，直到有人正視這個警告為止
+- 只看「變小」，備份變大不會觸發（資料只會越長越多是正常的）
+
+不設定的話（預設）完全不檢查，行為跟舊版一樣。
 
 ## 支援的備份格式
 
@@ -169,6 +190,8 @@ LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx ./lazarus --config laza
 **為什麼不直接用 `pg_restore --list` 看看檔案有沒有壞？** 那只驗證了檔案結構完整，不驗證資料。schema-only 的備份可以完美通過任何結構檢查。
 
 **為什麼 checks 只支援單一數字？** 「有幾筆」幾乎能回答所有關於還原結果的問題，而且失敗訊息不會模稜兩可（`got 0, want at least 1` 比對比兩坨結果集清楚得多）。
+
+**為什麼備份大小驟變偵測要另外存一個 state 檔，而不是塞進 checks？** checks 斷言的是「這次還原出來的資料庫」，天生沒有「跟上一次比較」的概念——它甚至不知道有沒有上一次。大小驟變偵測本質上是跨執行週期的比較，需要一個地方記住歷史，所以獨立成一個輕量的 JSON 檔，壞掉或刪除都不影響核心的還原驗證，只是重新歸零基準值而已。
 
 ## 開發
 

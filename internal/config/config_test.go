@@ -317,3 +317,99 @@ targets:
 		t.Errorf("MaxRestoreDuration = %v, want 0 (no limit) by default", cfg.Targets[0].MaxRestoreDuration)
 	}
 }
+
+func TestStateFileDefaultsWhenNotSet(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: prod-db
+    engine: postgres
+    path: /backups/prod.sql
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.StateFile != defaultStateFile {
+		t.Errorf("StateFile = %q, want default %q", cfg.StateFile, defaultStateFile)
+	}
+}
+
+func TestStateFileKeepsExplicitValue(t *testing.T) {
+	path := writeConfig(t, `
+state_file: /var/lib/lazarus/state.json
+targets:
+  - name: prod-db
+    engine: postgres
+    path: /backups/prod.sql
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.StateFile != "/var/lib/lazarus/state.json" {
+		t.Errorf("StateFile = %q, want the explicit value to win", cfg.StateFile)
+	}
+}
+
+func TestLoadParsesSizeDrift(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: prod-db
+    engine: postgres
+    path: /backups/prod.sql
+    size_drift:
+      max_decrease_pct: 50
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	sd := cfg.Targets[0].SizeDrift
+	if sd == nil || sd.MaxDecreasePct != 50 {
+		t.Errorf("SizeDrift = %+v, want max_decrease_pct=50", sd)
+	}
+}
+
+func TestSizeDriftNilWhenNotConfigured(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: prod-db
+    engine: postgres
+    path: /backups/prod.sql
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Targets[0].SizeDrift != nil {
+		t.Errorf("SizeDrift = %+v, want nil when not configured (check disabled)", cfg.Targets[0].SizeDrift)
+	}
+}
+
+func TestLoadRejectsInvalidSizeDriftThreshold(t *testing.T) {
+	cases := []struct {
+		name string
+		pct  string
+	}{
+		{name: "zero", pct: "0"},
+		{name: "negative", pct: "-10"},
+		{name: "over 100", pct: "150"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "targets:\n  - name: a\n    engine: postgres\n    path: /b.sql\n    size_drift:\n      max_decrease_pct: " + tc.pct
+			_, err := Load(writeConfig(t, body))
+			if err == nil {
+				t.Fatal("Load() error = nil, want an error for an out-of-range max_decrease_pct")
+			}
+			if !strings.Contains(err.Error(), "size_drift.max_decrease_pct") {
+				t.Errorf("error = %q, want it to mention size_drift.max_decrease_pct", err)
+			}
+		})
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"lazarus/internal/config"
 	"lazarus/internal/notify"
 	"lazarus/internal/report"
+	"lazarus/internal/state"
 	"lazarus/internal/verify"
 )
 
@@ -44,7 +45,20 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	results := verify.RunAll(ctx, targets)
+	st, err := state.Load(cfg.StateFile)
+	if err != nil {
+		// The state file only backs the size-drift check, an overlay on top
+		// of the actual restore-and-check verdict — losing it shouldn't stop
+		// a run, just its ability to compare against history this time.
+		fmt.Fprintf(os.Stderr, "lazarus: WARNING: could not load state file %q, size-drift baselines reset: %v\n", cfg.StateFile, err)
+		st = state.New()
+	}
+
+	results := verify.RunAll(ctx, targets, st)
+
+	if err := st.Save(cfg.StateFile); err != nil {
+		fmt.Fprintf(os.Stderr, "lazarus: WARNING: could not save state file %q: %v\n", cfg.StateFile, err)
+	}
 
 	var allPassed bool
 	if *asJSON {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"time"
 
+	"lazarus/internal/backup"
 	"lazarus/internal/verify"
 )
 
@@ -26,7 +27,7 @@ func Text(w io.Writer, results []verify.Result) bool {
 		if r.Backup != nil {
 			fmt.Fprintf(w, "      backup: %s (%s, %s old)\n",
 				r.Backup.Path,
-				humanSize(r.Backup.Size),
+				backup.HumanSize(r.Backup.Size),
 				r.Backup.Age(time.Now()).Round(time.Minute),
 			)
 		}
@@ -125,17 +126,4 @@ func tally(results []verify.Result) (passed, failed int) {
 		}
 	}
 	return passed, failed
-}
-
-func humanSize(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }

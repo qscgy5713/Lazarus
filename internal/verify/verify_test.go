@@ -41,3 +41,38 @@ func TestRTOErrorReportsSubSecondDurationsAccurately(t *testing.T) {
 		t.Errorf("error = %q, want it to state the actual duration", err)
 	}
 }
+
+func TestExceedsSizeDrift(t *testing.T) {
+	cases := []struct {
+		name           string
+		current        int64
+		baseline       int64
+		maxDecreasePct float64
+		want           bool
+	}{
+		{name: "unchanged size", current: 1000, baseline: 1000, maxDecreasePct: 10, want: false},
+		{name: "grew", current: 2000, baseline: 1000, maxDecreasePct: 10, want: false},
+		{name: "shrank within tolerance", current: 950, baseline: 1000, maxDecreasePct: 10, want: false},
+		{name: "shrank past tolerance", current: 400, baseline: 1000, maxDecreasePct: 50, want: true},
+		{name: "shrank exactly at tolerance", current: 500, baseline: 1000, maxDecreasePct: 50, want: false},
+		{name: "no baseline yet", current: 10, baseline: 0, maxDecreasePct: 50, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := exceedsSizeDrift(tc.current, tc.baseline, tc.maxDecreasePct); got != tc.want {
+				t.Errorf("exceedsSizeDrift(%d, %d, %v) = %v, want %v", tc.current, tc.baseline, tc.maxDecreasePct, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSizeDriftErrorStatesSizesAndPercentage(t *testing.T) {
+	err := sizeDriftError(400, 1000, 50)
+
+	for _, want := range []string{"60%", "50%"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to mention %q", err, want)
+		}
+	}
+}

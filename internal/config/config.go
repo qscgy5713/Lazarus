@@ -18,7 +18,13 @@ const (
 )
 
 type Config struct {
-	Notify  Notify   `yaml:"notify"`
+	Notify Notify `yaml:"notify"`
+
+	// StateFile is where per-target history (currently just the last known-
+	// good backup size, for size_drift) is remembered between runs. Defaults
+	// to lazarus-state.json next to wherever the tool is run from.
+	StateFile string `yaml:"state_file"`
+
 	Targets []Target `yaml:"targets"`
 }
 
@@ -76,7 +82,23 @@ type Target struct {
 	// Defaults per engine if empty.
 	Image string `yaml:"image"`
 
+	// SizeDrift fails the target if the newest backup is drastically smaller
+	// than the last backup that fully passed verification for this target —
+	// a sign that something upstream (a filter added to the dump command, a
+	// truncated export) is silently producing less data than before, even
+	// though the existing checks might still pass against what's left. nil
+	// (the default) disables the check. The first run for a target only
+	// establishes the baseline; there's nothing yet to compare against.
+	SizeDrift *SizeDrift `yaml:"size_drift"`
+
 	Checks []Check `yaml:"checks"`
+}
+
+// SizeDrift configures the backup-shrank-suspiciously check.
+type SizeDrift struct {
+	// MaxDecreasePct fails the target when the newest backup is smaller than
+	// the last known-good backup by more than this percentage.
+	MaxDecreasePct float64 `yaml:"max_decrease_pct"`
 }
 
 // Check is a SQL assertion run against the restored database. Exactly one of
@@ -94,6 +116,8 @@ const (
 	defaultPostgresImage = "postgres:16-alpine"
 	defaultMySQLImage    = "mysql:8"
 )
+
+const defaultStateFile = "lazarus-state.json"
 
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
@@ -119,6 +143,10 @@ func (c *Config) applyDefaultsAndValidate() error {
 
 	if err := c.applyNotifyDefaults(); err != nil {
 		return err
+	}
+
+	if c.StateFile == "" {
+		c.StateFile = defaultStateFile
 	}
 
 	seen := make(map[string]bool, len(c.Targets))
@@ -150,6 +178,12 @@ func (c *Config) applyDefaultsAndValidate() error {
 			return fmt.Errorf("target %q: engine is required (postgres or mysql)", t.Name)
 		default:
 			return fmt.Errorf("target %q: unsupported engine %q (expected postgres or mysql)", t.Name, t.Engine)
+		}
+
+		if t.SizeDrift != nil {
+			if t.SizeDrift.MaxDecreasePct <= 0 || t.SizeDrift.MaxDecreasePct > 100 {
+				return fmt.Errorf("target %q: size_drift.max_decrease_pct must be > 0 and <= 100", t.Name)
+			}
 		}
 
 		for j := range t.Checks {
