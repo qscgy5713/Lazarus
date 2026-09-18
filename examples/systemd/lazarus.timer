@@ -1,0 +1,15 @@
+[Unit]
+Description=Run lazarus.service daily
+
+[Timer]
+OnCalendar=daily
+# If the machine was off (or the timer was disabled) when the last run was
+# due, run it once at the next boot instead of silently skipping a whole
+# day — a cron entry gives you neither of these for free.
+Persistent=true
+# Spreads load if this same unit is deployed across many machines that all
+# boot/schedule around the same time.
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

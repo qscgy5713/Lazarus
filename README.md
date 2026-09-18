@@ -313,6 +313,50 @@ LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx ./lazarus --config laza
 - run: lazarus --config lazarus.yml --check-config
 ```
 
+## 用 systemd timer 排程
+
+比 cron 多一點好處：機器關機時錯過的執行會在下次開機補跑（`Persistent=true`），日誌直接進 `journalctl` 不用自己接，失敗了也看得到明確的服務狀態。範例檔案在 [`examples/systemd/`](examples/systemd/)：
+
+```bash
+sudo cp examples/systemd/lazarus.service examples/systemd/lazarus.timer /etc/systemd/system/
+sudo systemctl enable --now lazarus.timer
+```
+
+`lazarus.service` 用 `EnvironmentFile=-/opt/lazarus/lazarus.env` 讀取 webhook URL、GPG 密語這類密語（`-` 前綴代表檔案不存在也不報錯）——不要把這些寫進 unit 檔案本身，`/etc/systemd/system/` 底下的檔案預設是全機器可讀的：
+
+```bash
+# /opt/lazarus/lazarus.env
+LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx
+```
+
+查看執行紀錄：`journalctl -u lazarus.service`。手動觸發一次：`sudo systemctl start lazarus.service`。
+
+## 用 Docker Compose 部署
+
+repo 根目錄的 [`docker-compose.yml`](docker-compose.yml) 把 Lazarus 自己包成容器執行。Lazarus 還是得跟一個真正的 Docker daemon 對話才能起 sandbox 容器，所以需要掛載 `/var/run/docker.sock`——起出來的 sandbox 容器是跑在**主機**的 daemon 上，跟 Lazarus 自己的容器是兄弟關係，不是巢狀在裡面：
+
+```bash
+cp lazarus.example.yml lazarus.yml   # 改成你的備份路徑
+docker compose run --rm lazarus
+```
+
+Compose 本身不會幫你排程，`docker compose run --rm` 只是跑一次就結束——真正的定期執行還是要靠主機的 cron 呼叫這行指令，或用 systemd timer 呼叫它。
+
+`state_file` 建議指到掛載的 volume 路徑（例如 `/var/lib/lazarus/lazarus-state.json`），不然每次 `--rm` 都會把 size-drift 的基準值一起丟掉。
+
+如果備份是用**非對稱金鑰**（公鑰）加密而不是用 `LAZARUS_GPG_PASSPHRASE` 那種密碼式加密，容器每次啟動都是全新的、沒有金鑰圈——直接把 host 的 `~/.gnupg` 掛進去**行不通**：裡面的 gpg-agent socket 檔案沒辦法在容器裡正常運作（`gpg-agent` 連線會直接失敗），實際測過會噴 `Read-only file system` 或 `can't connect to the gpg-agent` 這類錯誤。正確做法是先匯出金鑰、用一次性指令匯入到一個獨立的 named volume 裡，之後每次執行都重複使用這個 volume：
+
+```bash
+gpg --export-secret-keys your-key-id > lazarus-key.asc
+
+# 一次性匯入，之後就不用再做
+docker compose run --rm --entrypoint sh \
+  -v "$(pwd)/lazarus-key.asc:/tmp/key.asc:ro" \
+  lazarus -c "gpg --batch --import /tmp/key.asc"
+```
+
+然後把 `docker-compose.yml` 裡註解掉的 `lazarus-gnupg` volume 取消註解（設定跟掛載都要），之後 `docker compose run --rm lazarus` 就會用這個持久化的金鑰圈解密。
+
 ## 設計上的取捨
 
 **為什麼用 Docker 容器而不是連到現有的測試資料庫？** 因為「乾淨」是驗證的前提。如果還原到一個已經有資料的資料庫，`SELECT count(*) FROM users` 回傳 100 根本無法判斷那是備份帶來的還是本來就在的。用完即丟的容器保證每次都從零開始。

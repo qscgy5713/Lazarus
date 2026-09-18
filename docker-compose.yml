@@ -1,0 +1,38 @@
+# Runs Lazarus itself in a container. It still needs to talk to a real
+# Docker daemon to start each target's sandbox — that's what the socket
+# mount below is for; the sandbox containers it starts run as siblings on
+# the *host's* daemon, not nested inside this one.
+#
+# Compose has no built-in scheduler, so this alone doesn't run Lazarus
+# periodically — pair it with a host cron entry (see "排進 cron" in the
+# README) calling:
+#   docker compose run --rm lazarus
+services:
+  lazarus:
+    build: .
+    volumes:
+      # Your real config and backup directory — adjust the host paths.
+      - ./lazarus.yml:/etc/lazarus/lazarus.yml:ro
+      - /path/to/backups:/backups:ro
+      # Keeps size-drift baselines across separate `run --rm` invocations,
+      # since --rm throws away the container (and anything written to its
+      # own filesystem) every time.
+      - lazarus-state:/var/lib/lazarus
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Only needed for a GPG-encrypted backup that uses a public/private
+      # key pair rather than a passphrase: this container starts with no
+      # keyring of its own, so without somewhere to keep one, the private
+      # key that decrypts them simply isn't anywhere. Not needed at all for
+      # LAZARUS_GPG_PASSPHRASE (symmetric encryption). Bind-mounting a live
+      # ~/.gnupg directly does *not* work — its gpg-agent socket files
+      # don't survive being mounted into a container — so this is a plain
+      # named volume instead; see "用 Docker Compose 部署" in the README
+      # for the one-time import step that populates it.
+      # - lazarus-gnupg:/root/.gnupg
+    environment:
+      - LAZARUS_WEBHOOK_URL
+      - LAZARUS_GPG_PASSPHRASE
+
+volumes:
+  lazarus-state:
+  # lazarus-gnupg:

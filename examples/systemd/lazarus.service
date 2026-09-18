@@ -1,0 +1,16 @@
+[Unit]
+Description=Verify database backups with Lazarus
+# Docker has to actually be up before a restore can start a sandbox
+# container in it.
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/lazarus
+ExecStart=/opt/lazarus/lazarus --config /opt/lazarus/lazarus.yml
+# The webhook URL and any GPG passphrase are secrets — keep them out of this
+# unit file (which ends up world-readable in /etc/systemd/system) and out
+# of lazarus.yml (which has no field for either). EnvironmentFile keeps
+# them in one place with its own tighter permissions instead.
+EnvironmentFile=-/opt/lazarus/lazarus.env
