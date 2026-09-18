@@ -109,6 +109,87 @@ func TestDetectsPostgresCustomFormatByMagicBytes(t *testing.T) {
 	}
 }
 
+func TestDetectsEncryptedFromGPGSuffix(t *testing.T) {
+	cases := []string{"dump.sql.gpg", "dump.sql.pgp", "dump.sql.asc", "dump.sql.GPG"}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := writeFile(t, dir, name, []byte("ciphertext, not real SQL"), time.Now())
+
+			got, err := Locate(path)
+			if err != nil {
+				t.Fatalf("Locate() error = %v", err)
+			}
+			if !got.Encrypted {
+				t.Errorf("Encrypted = false, want true for %q", name)
+			}
+		})
+	}
+}
+
+func TestPlainFileIsNotMistakenForEncrypted(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "dump.sql", []byte("SELECT 1;"), time.Now())
+
+	got, err := Locate(path)
+	if err != nil {
+		t.Fatalf("Locate() error = %v", err)
+	}
+	if got.Encrypted {
+		t.Error("Encrypted = true, want false for a plain .sql file")
+	}
+}
+
+func TestDetectsCompressionUnderneathEncryption(t *testing.T) {
+	// The real-world convention is compress-then-encrypt, so the .gz suffix
+	// ends up second-to-last, not last (dump.sql.gz.gpg) — Compressed has to
+	// still be detected correctly with the encrypted suffix stripped off
+	// first, not just by checking the very end of the filename.
+	dir := t.TempDir()
+	path := writeFile(t, dir, "dump.sql.gz.gpg", []byte("ciphertext"), time.Now())
+
+	got, err := Locate(path)
+	if err != nil {
+		t.Fatalf("Locate() error = %v", err)
+	}
+	if !got.Encrypted {
+		t.Error("Encrypted = false, want true for dump.sql.gz.gpg")
+	}
+	if !got.Compressed {
+		t.Error("Compressed = false, want true for dump.sql.gz.gpg — .gz is still there, just not at the very end")
+	}
+}
+
+func TestEncryptedUncompressedFileIsNotMistakenForCompressed(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "dump.sql.gpg", []byte("ciphertext"), time.Now())
+
+	got, err := Locate(path)
+	if err != nil {
+		t.Fatalf("Locate() error = %v", err)
+	}
+	if got.Compressed {
+		t.Error("Compressed = true, want false for dump.sql.gpg — there's no .gz anywhere in this name")
+	}
+}
+
+func TestEncryptedFileDefaultsToPlainSQLFormatWithoutPeekingCiphertext(t *testing.T) {
+	// Peeking at the real magic bytes would mean decrypting during Locate,
+	// which isn't its job — an encrypted file's "ciphertext" here would
+	// never coincidentally start with PGDMP anyway, but the point is Locate
+	// must not try to open/decrypt it at all.
+	dir := t.TempDir()
+	path := writeFile(t, dir, "dump.dump.gpg", []byte("PGDMP-shaped-looking ciphertext that isn't real"), time.Now())
+
+	got, err := Locate(path)
+	if err != nil {
+		t.Fatalf("Locate() error = %v", err)
+	}
+	if got.Format != FormatPlainSQL {
+		t.Errorf("Format = %q, want %q for an encrypted file (format is only knowable after decrypting)", got.Format, FormatPlainSQL)
+	}
+}
+
 func TestPlainSQLDumpIsNotMistakenForCustomFormat(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "prod.sql", []byte("--\n-- PostgreSQL database dump\n--\n"), time.Now())

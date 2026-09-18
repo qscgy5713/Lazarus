@@ -271,6 +271,44 @@ targets:
 	}
 }
 
+func TestGPGPassphraseOnlyEverComesFromEnvVar(t *testing.T) {
+	// There is deliberately no YAML field for this — a decryption
+	// passphrase must never be able to end up committed to a config file.
+	t.Setenv(gpgPassphraseEnvVar, "correct-horse-battery-staple")
+
+	path := writeConfig(t, `
+targets:
+  - name: pg
+    engine: postgres
+    path: /backups/pg.sql.gpg
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.GPGPassphrase != "correct-horse-battery-staple" {
+		t.Errorf("GPGPassphrase = %q, want the environment value", cfg.GPGPassphrase)
+	}
+}
+
+func TestGPGPassphraseEmptyWhenEnvVarNotSet(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: pg
+    engine: postgres
+    path: /backups/pg.sql
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.GPGPassphrase != "" {
+		t.Errorf("GPGPassphrase = %q, want empty when the env var isn't set", cfg.GPGPassphrase)
+	}
+}
+
 func TestNotifyRejectsUnknownFormatAndWhen(t *testing.T) {
 	cases := []struct {
 		name    string

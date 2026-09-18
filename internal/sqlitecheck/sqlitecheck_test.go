@@ -46,7 +46,7 @@ func TestPrepareCopiesPlainFile(t *testing.T) {
 	dir := t.TempDir()
 	src := newRealDB(t, dir, 3)
 
-	path, cleanup, err := Prepare(&backup.File{Path: src})
+	path, cleanup, err := Prepare(context.Background(), &backup.File{Path: src}, "")
 	if err != nil {
 		t.Fatalf("Prepare() error = %v", err)
 	}
@@ -81,7 +81,7 @@ func TestPrepareDecompressesGzip(t *testing.T) {
 	gz.Close()
 	f.Close()
 
-	path, cleanup, err := Prepare(&backup.File{Path: gzPath, Compressed: true})
+	path, cleanup, err := Prepare(context.Background(), &backup.File{Path: gzPath, Compressed: true}, "")
 	if err != nil {
 		t.Fatalf("Prepare() error = %v", err)
 	}
@@ -93,7 +93,7 @@ func TestPrepareDecompressesGzip(t *testing.T) {
 }
 
 func TestPrepareRejectsMissingFile(t *testing.T) {
-	_, _, err := Prepare(&backup.File{Path: filepath.Join(t.TempDir(), "nope.db")})
+	_, _, err := Prepare(context.Background(), &backup.File{Path: filepath.Join(t.TempDir(), "nope.db")}, "")
 	if err == nil {
 		t.Fatal("Prepare() error = nil, want an error for a missing backup file")
 	}
@@ -151,3 +151,54 @@ func TestRunChecksCatchesEmptyTable(t *testing.T) {
 }
 
 func int64ptr(v int64) *int64 { return &v }
+
+func TestPrepareOutputFileIsNotWorldOrGroupReadable(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source.db")
+	if err := os.WriteFile(src, []byte("fake sqlite content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	path, cleanup, err := Prepare(context.Background(), &backup.File{Path: src}, "")
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	defer cleanup()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		t.Errorf("prepared temp file mode = %v, want no group/other permission bits", info.Mode().Perm())
+	}
+}
+
+func TestPrepareEncryptedOutputFileIsNotWorldOrGroupReadable(t *testing.T) {
+	requireSQLite(t)
+	if _, err := exec.LookPath("gpg"); err != nil {
+		t.Skip("gpg not found on PATH")
+	}
+	dir := t.TempDir()
+	src := newRealDB(t, dir, 2)
+
+	encPath := filepath.Join(dir, "source.db.gpg")
+	cmd := exec.Command("gpg", "--batch", "--yes", "--passphrase", "pw", "--symmetric", "--cipher-algo", "AES256", "-o", encPath, src)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("encrypt fixture: %v: %s", err, out)
+	}
+
+	path, cleanup, err := Prepare(context.Background(), &backup.File{Path: encPath, Encrypted: true}, "pw")
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	defer cleanup()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		t.Errorf("prepared temp file mode = %v, want no group/other permission bits", info.Mode().Perm())
+	}
+}

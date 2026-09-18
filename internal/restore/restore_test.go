@@ -3,6 +3,7 @@ package restore
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -126,7 +127,7 @@ func TestOpenPlainFile(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	reader, closer, err := open(&backup.File{Path: path})
+	reader, closer, err := open(context.Background(), &backup.File{Path: path}, "")
 	if err != nil {
 		t.Fatalf("open() error = %v", err)
 	}
@@ -155,7 +156,7 @@ func TestOpenDecompressesGzip(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	reader, closer, err := open(&backup.File{Path: path, Compressed: true})
+	reader, closer, err := open(context.Background(), &backup.File{Path: path, Compressed: true}, "")
 	if err != nil {
 		t.Fatalf("open() error = %v", err)
 	}
@@ -179,7 +180,7 @@ func TestOpenRejectsCorruptGzip(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	if _, _, err := open(&backup.File{Path: path, Compressed: true}); err == nil {
+	if _, _, err := open(context.Background(), &backup.File{Path: path, Compressed: true}, ""); err == nil {
 		t.Fatal("open() error = nil, want an error for a file that isn't valid gzip")
 	}
 }

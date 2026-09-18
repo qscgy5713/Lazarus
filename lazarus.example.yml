@@ -45,7 +45,10 @@ targets:
     # fetch_timeout: 5m   # defaults to 5m when fetch_command is set
 
     # Plain path or a glob. With a glob, the most recently modified match is
-    # used — that's the file you'd actually restore in an emergency.
+    # used — that's the file you'd actually restore in an emergency. A
+    # .gpg/.pgp/.asc suffix (e.g. shop-latest.sql.gz.gpg) is decrypted
+    # automatically — see LAZARUS_GPG_PASSPHRASE and "GPG 加密備份" in the
+    # README. Nothing to set here for that; it's detected from the name.
     path: /backups/postgres/shop-*.sql.gz
 
     # Fail if the newest backup is older than this. A backup that restores

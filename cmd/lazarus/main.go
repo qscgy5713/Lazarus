@@ -83,7 +83,7 @@ func main() {
 		st = state.New()
 	}
 
-	results := verify.RunAll(ctx, targets, st, cfg.Parallelism, *keepOnFailure)
+	results := verify.RunAll(ctx, targets, st, cfg.Parallelism, *keepOnFailure, cfg.GPGPassphrase)
 
 	if err := st.Save(cfg.StateFile); err != nil {
 		fmt.Fprintf(os.Stderr, "lazarus: WARNING: could not save state file %q: %v\n", cfg.StateFile, err)

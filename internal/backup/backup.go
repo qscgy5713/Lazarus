@@ -28,6 +28,7 @@ type File struct {
 	Size       int64
 	ModTime    time.Time
 	Compressed bool // gzip
+	Encrypted  bool // GPG — decrypted before Compressed is ever checked
 	Format     Format
 }
 
@@ -80,13 +81,23 @@ func Locate(pattern string) (*File, error) {
 	}
 
 	file := &File{
-		Path:       newest,
-		Size:       newestInfo.Size(),
-		ModTime:    newestInfo.ModTime(),
-		Compressed: strings.HasSuffix(strings.ToLower(newest), ".gz"),
+		Path:      newest,
+		Size:      newestInfo.Size(),
+		ModTime:   newestInfo.ModTime(),
+		Encrypted: hasEncryptedSuffix(newest),
 	}
 
-	format, err := detectFormat(newest, file.Compressed)
+	// Compression is encrypt-last convention's second-to-outermost suffix
+	// (shop.sql.gz.gpg), so it has to be checked against the name with any
+	// encrypted suffix stripped off first — otherwise "shop.sql.gz.gpg"
+	// would never match ".gz" at all, since the name doesn't end with it.
+	nameUnderEncryption := newest
+	if file.Encrypted {
+		nameUnderEncryption = strings.TrimSuffix(newest, filepath.Ext(newest))
+	}
+	file.Compressed = strings.HasSuffix(strings.ToLower(nameUnderEncryption), ".gz")
+
+	format, err := detectFormat(newest, file.Compressed || file.Encrypted)
 	if err != nil {
 		return nil, err
 	}
@@ -95,17 +106,31 @@ func Locate(pattern string) (*File, error) {
 	return file, nil
 }
 
+// encryptedSuffixes are the conventional extensions for a GPG-encrypted
+// file — binary OpenPGP output (.gpg, .pgp) or ASCII-armored (.asc).
+var encryptedSuffixes = []string{".gpg", ".pgp", ".asc"}
+
+func hasEncryptedSuffix(name string) bool {
+	lower := strings.ToLower(name)
+	for _, suffix := range encryptedSuffixes {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 // pgDumpCustomMagic is the marker pg_dump writes at the start of its
 // custom-format archives; psql can't read those, pg_restore has to.
 var pgDumpCustomMagic = []byte("PGDMP")
 
-func detectFormat(path string, compressed bool) (Format, error) {
-	// A gzipped dump is almost always plain SQL piped through gzip;
+func detectFormat(path string, opaque bool) (Format, error) {
+	// A gzipped or encrypted dump is almost always plain SQL underneath;
 	// pg_dump's custom format is already compressed internally, so people
-	// rarely gzip it again. Reading the magic bytes would mean decompressing
-	// here, which isn't worth it — the restore step streams it through
-	// gunzip anyway.
-	if compressed {
+	// rarely gzip (let alone encrypt) it on top. Reading the magic bytes
+	// would mean decompressing/decrypting here, which isn't worth it — the
+	// restore step streams through both anyway.
+	if opaque {
 		return FormatPlainSQL, nil
 	}
 

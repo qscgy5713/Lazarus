@@ -37,6 +37,14 @@ type Config struct {
 	// behavior.
 	Parallelism int `yaml:"parallelism"`
 
+	// GPGPassphrase decrypts any target's backup that's GPG-encrypted
+	// (detected by a .gpg/.pgp/.asc suffix on the path). There's no YAML
+	// field for it — it only ever comes from LAZARUS_GPG_PASSPHRASE, so a
+	// passphrase can never end up committed to a config file by mistake. A
+	// backup encrypted to a private key already in the local GPG keyring
+	// needs no passphrase at all, so this can be left unset.
+	GPGPassphrase string `yaml:"-"`
+
 	Targets []Target `yaml:"targets"`
 }
 
@@ -60,6 +68,7 @@ type Notify struct {
 }
 
 const webhookURLEnvVar = "LAZARUS_WEBHOOK_URL"
+const gpgPassphraseEnvVar = "LAZARUS_GPG_PASSPHRASE"
 
 const (
 	defaultNotifyFormat = "slack"
@@ -184,6 +193,8 @@ func (c *Config) applyDefaultsAndValidate() error {
 	if c.Parallelism <= 0 {
 		c.Parallelism = defaultParallelism
 	}
+
+	c.GPGPassphrase = os.Getenv(gpgPassphraseEnvVar)
 
 	seen := make(map[string]bool, len(c.Targets))
 	for i := range c.Targets {

@@ -17,15 +17,37 @@ import (
 	"lazarus/internal/backup"
 	"lazarus/internal/check"
 	"lazarus/internal/config"
+	"lazarus/internal/decrypt"
 )
 
-// Prepare copies file into a throwaway temp file (decompressing it first if
-// it's gzipped) and returns that copy's path. The caller must run the
-// returned cleanup func once done with it.
-func Prepare(file *backup.File) (string, func(), error) {
-	src, err := os.Open(file.Path)
+// Prepare copies file into a throwaway temp file — decrypting it first if
+// it's GPG-encrypted, then decompressing if it's gzipped (that order,
+// matching the real-world convention of compressing a dump and only then
+// encrypting it) — and returns that copy's path. The caller must run the
+// returned cleanup func once done with it. gpgPassphrase is only used when
+// file.Encrypted; ignored otherwise.
+func Prepare(ctx context.Context, file *backup.File, gpgPassphrase string) (string, func(), error) {
+	srcPath := file.Path
+	var cleanups []func()
+	cleanupAll := func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}
+
+	if file.Encrypted {
+		decryptedPath, cleanup, err := decrypt.Decrypt(ctx, srcPath, gpgPassphrase)
+		if err != nil {
+			return "", nil, err
+		}
+		srcPath = decryptedPath
+		cleanups = append(cleanups, cleanup)
+	}
+
+	src, err := os.Open(srcPath)
 	if err != nil {
-		return "", nil, fmt.Errorf("open backup %q: %w", file.Path, err)
+		cleanupAll()
+		return "", nil, fmt.Errorf("open backup %q: %w", srcPath, err)
 	}
 	defer src.Close()
 
@@ -33,7 +55,8 @@ func Prepare(file *backup.File) (string, func(), error) {
 	if file.Compressed {
 		gz, err := gzip.NewReader(src)
 		if err != nil {
-			return "", nil, fmt.Errorf("backup %q is not readable as gzip: %w", file.Path, err)
+			cleanupAll()
+			return "", nil, fmt.Errorf("backup %q is not readable as gzip: %w", srcPath, err)
 		}
 		defer gz.Close()
 		reader = gz
@@ -41,21 +64,24 @@ func Prepare(file *backup.File) (string, func(), error) {
 
 	tmp, err := os.CreateTemp("", "lazarus-sqlite-*.db")
 	if err != nil {
+		cleanupAll()
 		return "", nil, fmt.Errorf("create temp file: %w", err)
 	}
-	cleanup := func() { os.Remove(tmp.Name()) }
+	tmpCleanup := func() { os.Remove(tmp.Name()) }
 
 	if _, err := io.Copy(tmp, reader); err != nil {
 		tmp.Close()
-		cleanup()
+		tmpCleanup()
+		cleanupAll()
 		return "", nil, fmt.Errorf("copy backup into place: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		cleanup()
+		tmpCleanup()
+		cleanupAll()
 		return "", nil, fmt.Errorf("close temp file: %w", err)
 	}
 
-	return tmp.Name(), cleanup, nil
+	return tmp.Name(), func() { tmpCleanup(); cleanupAll() }, nil
 }
 
 // IntegrityCheck runs SQLite's own structural check. A file that isn't

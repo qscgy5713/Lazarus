@@ -128,7 +128,7 @@ func TestRunEndToEndSQLitePasses(t *testing.T) {
 		},
 	}
 
-	result := Run(context.Background(), target, 0, false, false)
+	result := Run(context.Background(), target, 0, false, false, "")
 
 	if !result.Passed {
 		t.Fatalf("Run() = %+v, want it to pass", result)
@@ -155,7 +155,7 @@ func TestRunEndToEndSQLiteCatchesEmptyTable(t *testing.T) {
 		},
 	}
 
-	result := Run(context.Background(), target, 0, false, false)
+	result := Run(context.Background(), target, 0, false, false, "")
 
 	if result.Passed {
 		t.Fatal("Run() passed, want it to fail against an empty table")
@@ -179,7 +179,7 @@ func TestRunEndToEndSQLiteCatchesCorruptFile(t *testing.T) {
 		Path:   path,
 	}
 
-	result := Run(context.Background(), target, 0, false, false)
+	result := Run(context.Background(), target, 0, false, false, "")
 
 	if result.Passed {
 		t.Fatal("Run() passed, want it to fail on a file that isn't a real SQLite database")
@@ -206,7 +206,7 @@ func TestRunKeepsSQLiteTempFileWhenRestoreItselfFails(t *testing.T) {
 
 	target := config.Target{Name: "sqlite-target", Engine: config.EngineSQLite, Path: path}
 
-	result := Run(context.Background(), target, 0, false, true)
+	result := Run(context.Background(), target, 0, false, true, "")
 
 	if result.Passed {
 		t.Fatal("Run() passed, want it to fail on a file that isn't a real SQLite database")
@@ -226,6 +226,79 @@ func TestRunKeepsSQLiteTempFileWhenRestoreItselfFails(t *testing.T) {
 }
 
 func int64ptr(v int64) *int64 { return &v }
+
+// GPG decryption needs no Docker either, so a SQLite target proves the whole
+// decrypt -> restore -> check pipeline end to end with a real gpg binary and
+// a real encrypted backup.
+
+func requireGPG(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("gpg"); err != nil {
+		t.Skip("gpg not found on PATH")
+	}
+}
+
+func encryptedSQLiteBackup(t *testing.T, dir string, rows int, passphrase string) string {
+	t.Helper()
+	plain := sqliteBackup(t, dir, "backup.db", rows)
+
+	encPath := filepath.Join(dir, "backup.db.gpg")
+	cmd := exec.Command("gpg", "--batch", "--yes",
+		"--passphrase", passphrase,
+		"--symmetric", "--cipher-algo", "AES256",
+		"-o", encPath, plain)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("encrypt fixture: %v: %s", err, out)
+	}
+	return encPath
+}
+
+func TestRunDecryptsGPGEncryptedSQLiteBackup(t *testing.T) {
+	requireSQLite(t)
+	requireGPG(t)
+	dir := t.TempDir()
+	encPath := encryptedSQLiteBackup(t, dir, 3, "correct-passphrase")
+
+	target := config.Target{
+		Name:   "encrypted-sqlite",
+		Engine: config.EngineSQLite,
+		Path:   encPath,
+		Checks: []config.Check{
+			{Name: "users exist", SQL: "SELECT count(*) FROM users", Min: int64ptr(1)},
+		},
+	}
+
+	result := Run(context.Background(), target, 0, false, false, "correct-passphrase")
+
+	if !result.Passed {
+		t.Fatalf("Run() = %+v, want it to pass once decrypted", result)
+	}
+}
+
+func TestRunFailsAtRestoreStageWithWrongGPGPassphrase(t *testing.T) {
+	requireSQLite(t)
+	requireGPG(t)
+	dir := t.TempDir()
+	encPath := encryptedSQLiteBackup(t, dir, 3, "the-real-passphrase")
+
+	target := config.Target{
+		Name:   "encrypted-sqlite",
+		Engine: config.EngineSQLite,
+		Path:   encPath,
+		Checks: []config.Check{
+			{Name: "users exist", SQL: "SELECT count(*) FROM users", Min: int64ptr(1)},
+		},
+	}
+
+	result := Run(context.Background(), target, 0, false, false, "wrong-passphrase")
+
+	if result.Passed {
+		t.Fatal("Run() passed, want it to fail with the wrong passphrase")
+	}
+	if result.Stage != StageRestore {
+		t.Errorf("Stage = %q, want %q", result.Stage, StageRestore)
+	}
+}
 
 func TestDebugHintForPostgres(t *testing.T) {
 	sb := &sandbox.Sandbox{Name: "lazarus-verify-123", Engine: config.EnginePostgres}
@@ -265,7 +338,7 @@ func TestRunKeepsSQLiteTempFileOnFailureWhenAsked(t *testing.T) {
 		},
 	}
 
-	result := Run(context.Background(), target, 0, false, true)
+	result := Run(context.Background(), target, 0, false, true, "")
 
 	if result.Passed {
 		t.Fatal("Run() passed, want it to fail against an empty table")
@@ -298,7 +371,7 @@ func TestRunCleansUpSQLiteTempFileOnFailureWhenNotAsked(t *testing.T) {
 		},
 	}
 
-	result := Run(context.Background(), target, 0, false, false)
+	result := Run(context.Background(), target, 0, false, false, "")
 
 	if result.Passed {
 		t.Fatal("Run() passed, want it to fail against an empty table")
@@ -322,7 +395,7 @@ func TestRunCleansUpSQLiteTempFileOnSuccessEvenWithKeepOnFailureSet(t *testing.T
 		},
 	}
 
-	result := Run(context.Background(), target, 0, false, true)
+	result := Run(context.Background(), target, 0, false, true, "")
 
 	if !result.Passed {
 		t.Fatalf("Run() = %+v, want it to pass", result)
@@ -357,7 +430,7 @@ func TestRunFetchesBackupBeforeLocating(t *testing.T) {
 		},
 	}
 
-	result := Run(context.Background(), target, 0, false, false)
+	result := Run(context.Background(), target, 0, false, false, "")
 
 	if !result.Passed {
 		t.Fatalf("Run() = %+v, want it to pass once the fetch command places the backup", result)
@@ -373,7 +446,7 @@ func TestRunFailsAtFetchStageWhenFetchCommandFails(t *testing.T) {
 		FetchCommand: "echo access denied >&2; exit 1",
 	}
 
-	result := Run(context.Background(), target, 0, false, false)
+	result := Run(context.Background(), target, 0, false, false, "")
 
 	if result.Passed {
 		t.Fatal("Run() passed, want it to fail when the fetch command exits non-zero")
@@ -397,7 +470,7 @@ func TestRunFailsFastWhenFetchCommandOutlivesItsTimeout(t *testing.T) {
 	}
 
 	start := time.Now()
-	result := Run(context.Background(), target, 0, false, false)
+	result := Run(context.Background(), target, 0, false, false, "")
 	elapsed := time.Since(start)
 
 	if result.Passed {
@@ -415,7 +488,7 @@ func TestRunSkipsFetchWhenNoFetchCommandConfigured(t *testing.T) {
 
 	target := config.Target{Name: "local-sqlite", Engine: config.EngineSQLite, Path: path}
 
-	result := Run(context.Background(), target, 0, false, false)
+	result := Run(context.Background(), target, 0, false, false, "")
 
 	if !result.Passed {
 		t.Fatalf("Run() = %+v, want a plain local target with no fetch_command to still pass", result)
@@ -444,7 +517,7 @@ func TestRunAllPreservesTargetOrderRegardlessOfCompletionOrder(t *testing.T) {
 		}
 	}
 
-	results := RunAll(context.Background(), targets, state.New(), 4, false)
+	results := RunAll(context.Background(), targets, state.New(), 4, false, "")
 
 	if len(results) != n {
 		t.Fatalf("got %d results, want %d", len(results), n)
@@ -476,7 +549,7 @@ func TestRunAllRecordsBaselineForEveryPassingTargetConcurrently(t *testing.T) {
 	}
 
 	st := state.New()
-	results := RunAll(context.Background(), targets, st, 8, false)
+	results := RunAll(context.Background(), targets, st, 8, false, "")
 
 	for _, r := range results {
 		if !r.Passed {
@@ -506,7 +579,7 @@ func TestRunAllTreatsNonPositiveParallelismAsOne(t *testing.T) {
 	target := config.Target{Name: "t", Engine: config.EngineSQLite, Path: path}
 
 	for _, p := range []int{0, -1} {
-		results := RunAll(context.Background(), []config.Target{target}, state.New(), p, false)
+		results := RunAll(context.Background(), []config.Target{target}, state.New(), p, false, "")
 		if len(results) != 1 || !results[0].Passed {
 			t.Errorf("RunAll with parallelism=%d = %+v, want a single passing result", p, results)
 		}

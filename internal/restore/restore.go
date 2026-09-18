@@ -13,18 +13,20 @@ import (
 
 	"lazarus/internal/backup"
 	"lazarus/internal/config"
+	"lazarus/internal/decrypt"
 	"lazarus/internal/sandbox"
 )
 
 // Run streams file into the sandbox and returns the restore output. A
 // non-nil error means the backup could not be restored — which is the whole
-// finding this tool exists to produce.
-func Run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, file *backup.File) (string, error) {
+// finding this tool exists to produce. gpgPassphrase is only used when
+// file.Encrypted; ignored otherwise.
+func Run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, file *backup.File, gpgPassphrase string) (string, error) {
 	// Plain-SQL Postgres dumps reference the roles that owned the original
 	// database; create them first so a missing role doesn't fail a backup
 	// that's actually fine. pg_restore handles this itself via --no-owner.
 	if engine == config.EnginePostgres && file.Format == backup.FormatPlainSQL {
-		scanReader, scanCloser, err := open(file)
+		scanReader, scanCloser, err := open(ctx, file, gpgPassphrase)
 		if err != nil {
 			return "", err
 		}
@@ -36,7 +38,7 @@ func Run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, file *b
 		}
 	}
 
-	reader, closer, err := open(file)
+	reader, closer, err := open(ctx, file, gpgPassphrase)
 	if err != nil {
 		return "", err
 	}
@@ -67,22 +69,46 @@ func Run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, file *b
 	return output, nil
 }
 
-func open(file *backup.File) (io.Reader, func(), error) {
-	f, err := os.Open(file.Path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open backup %q: %w", file.Path, err)
+// open returns a reader over file's plaintext, uncompressed content —
+// decrypting (if file.Encrypted) and decompressing (if file.Compressed), in
+// that order, since the real-world convention is to compress a dump and
+// only then encrypt it, never the other way around.
+func open(ctx context.Context, file *backup.File, gpgPassphrase string) (io.Reader, func(), error) {
+	path := file.Path
+	var cleanups []func()
+	cleanupAll := func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
 	}
 
+	if file.Encrypted {
+		decryptedPath, cleanup, err := decrypt.Decrypt(ctx, path, gpgPassphrase)
+		if err != nil {
+			return nil, nil, err
+		}
+		path = decryptedPath
+		cleanups = append(cleanups, cleanup)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		cleanupAll()
+		return nil, nil, fmt.Errorf("open backup %q: %w", path, err)
+	}
+	cleanups = append(cleanups, func() { f.Close() })
+
 	if !file.Compressed {
-		return f, func() { f.Close() }, nil
+		return f, cleanupAll, nil
 	}
 
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		f.Close()
-		return nil, nil, fmt.Errorf("backup %q is not readable as gzip: %w", file.Path, err)
+		cleanupAll()
+		return nil, nil, fmt.Errorf("backup %q is not readable as gzip: %w", path, err)
 	}
-	return gz, func() { gz.Close(); f.Close() }, nil
+	cleanups = append(cleanups, func() { gz.Close() })
+	return gz, cleanupAll, nil
 }
 
 func restoreCommand(engine config.Engine, file *backup.File) ([]string, error) {

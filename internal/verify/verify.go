@@ -61,8 +61,9 @@ type Result struct {
 // failing at or after the restore step, and populates the result's
 // DebugHint with how to connect to it — for looking at exactly what did or
 // didn't make it into the restored database, rather than guessing from the
-// error message alone.
-func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline bool, keepOnFailure bool) (result Result) {
+// error message alone. gpgPassphrase decrypts the backup first when it's
+// GPG-encrypted; ignored for a target whose backup isn't.
+func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline bool, keepOnFailure bool, gpgPassphrase string) (result Result) {
 	started := time.Now()
 	result = Result{Target: target.Name, Stage: StageFetch}
 	// A named return value, not a "finish() Result" helper returning a plain
@@ -119,7 +120,7 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 		result.Stage = StageRestore
 		restoreStarted := time.Now()
 
-		path, cleanup, err := sqlitecheck.Prepare(file)
+		path, cleanup, err := sqlitecheck.Prepare(ctx, file, gpgPassphrase)
 		if err != nil {
 			result.Err = err
 			return
@@ -161,7 +162,7 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 
 		result.Stage = StageRestore
 		restoreStarted := time.Now()
-		if _, err := restore.Run(ctx, sb, target.Engine, file); err != nil {
+		if _, err := restore.Run(ctx, sb, target.Engine, file, gpgPassphrase); err != nil {
 			result.Err = err
 			return
 		}
@@ -250,8 +251,9 @@ func sizeDriftError(current, baseline int64, maxDecreasePct float64) error {
 // as targets, regardless of which finished first. keepOnFailure is passed
 // straight through to each target's Run — with several targets failing at
 // once, each one that qualifies gets its own kept sandbox, left for the
-// caller to inspect and clean up individually.
-func RunAll(ctx context.Context, targets []config.Target, st *state.State, parallelism int, keepOnFailure bool) []Result {
+// caller to inspect and clean up individually. gpgPassphrase is passed
+// straight through to each target's Run.
+func RunAll(ctx context.Context, targets []config.Target, st *state.State, parallelism int, keepOnFailure bool, gpgPassphrase string) []Result {
 	if parallelism <= 0 {
 		parallelism = 1
 	}
@@ -273,7 +275,7 @@ func RunAll(ctx context.Context, targets []config.Target, st *state.State, paral
 				baseline, hasBaseline = ts.LastSizeBytes, true
 			}
 
-			result := Run(ctx, target, baseline, hasBaseline, keepOnFailure)
+			result := Run(ctx, target, baseline, hasBaseline, keepOnFailure, gpgPassphrase)
 			results[i] = result
 
 			if result.Passed && result.Backup != nil {
