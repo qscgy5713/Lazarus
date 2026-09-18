@@ -31,7 +31,16 @@ Lazarus 就是定期幫你跑那一次還原。
 
 ## 安裝
 
-需要 Go 1.27+。驗證 PostgreSQL / MySQL 備份需要本機可用的 Docker；SQLite 不需要。
+驗證 PostgreSQL / MySQL 備份需要本機可用的 Docker；SQLite 不需要。
+
+從 [Releases](https://github.com/qscgy5713/Lazarus/releases) 下載對應平台的預編譯執行檔（Linux/macOS/Windows，amd64/arm64），解壓縮即可用：
+
+```bash
+tar xzf Lazarus_*_linux_amd64.tar.gz
+./lazarus --version
+```
+
+或者從原始碼建置（需要 Go 1.27+）：
 
 ```bash
 git clone https://github.com/qscgy5713/Lazarus.git
@@ -72,6 +81,7 @@ FAIL  production-mysql [checks] check "customers table is populated" failed: got
 | `--json` | `false` | 機器可讀的輸出，給 CI/腳本用 |
 | `--keep-on-failure` | `false` | 目標失敗時保留 sandbox 容器（或 SQLite 暫存檔）不清掉，方便直接連進去查資料（見下方「保留失敗現場除錯」） |
 | `--check-config` | `false` | 只檢查設定檔對不對就結束，不抓備份、不還原、完全不碰 Docker（見下方「設定檔檢查」） |
+| `--version` | `false` | 印出版本後結束，不需要設定檔 |
 
 環境變數：
 
@@ -304,3 +314,13 @@ go build ./...
 ```
 
 PostgreSQL / MySQL 的端對端測試需要 Docker，會實際起容器、產生真實的 dump 再還原——這個工具的核心價值就是「真的跑一次」，所以驗證方式也一樣。SQLite 不需要 Docker，`go test` 裡就有跑真正的 `sqlite3` CLI、真的資料庫檔案的端對端測試（本機沒裝 `sqlite3` 會自動跳過）。
+
+### 發布
+
+推一個 `v*` 開頭的 tag（例如 `v1.0.0`）會觸發 GitHub Actions 用 [goreleaser](https://goreleaser.com/) 自動建置六種平台/架構組合（Linux/macOS/Windows × amd64/arm64）並發布到 GitHub Releases。本機可以先用以下指令跑一次乾跑，不需要 tag、不會真的發布：
+
+```bash
+goreleaser release --snapshot --clean --skip=publish
+```
+
+`.goreleaser.yaml` 的設定也會在每次 CI 跑的時候用 `goreleaser check` 跟一次單一平台的快照建置驗證過，設定檔壞掉不用等到真的推 tag 才發現。

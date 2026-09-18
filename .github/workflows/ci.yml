@@ -34,3 +34,16 @@ jobs:
 
       - name: Test
         run: go test ./... -race
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: check
+
+      - name: Verify goreleaser build config still compiles
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: build --single-target --snapshot --clean

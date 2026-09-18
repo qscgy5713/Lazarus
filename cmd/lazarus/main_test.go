@@ -280,3 +280,18 @@ targets:
 		t.Errorf("size_drift_max_decrease_pct = %v, want 50", target.SizeDriftMaxDecreasePct)
 	}
 }
+
+func TestVersionFlagPrintsVersionWithoutNeedingAConfigFile(t *testing.T) {
+	// --version has to work with no --config anywhere in sight — someone
+	// checking what they just downloaded hasn't written a config yet.
+	stdout, stderr, exitCode, err := runLazarus("--version")
+	if err != nil {
+		t.Fatalf("run lazarus: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, "lazarus") {
+		t.Errorf("stdout = %q, want it to mention lazarus", stdout)
+	}
+}

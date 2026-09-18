@@ -20,13 +20,24 @@ import (
 	"lazarus/internal/verify"
 )
 
+// version is set at build time via -ldflags "-X main.version=...". goreleaser
+// does this for every released binary; a `go build` run by hand leaves it at
+// "dev", which is the right answer for a binary that isn't a tagged release.
+var version = "dev"
+
 func main() {
 	configPath := flag.String("config", "lazarus.yml", "path to the config file")
 	targetName := flag.String("target", "", "verify only this target (default: all)")
 	asJSON := flag.Bool("json", false, "machine-readable output")
 	keepOnFailure := flag.Bool("keep-on-failure", false, "keep a failing target's sandbox container (or SQLite temp file) instead of tearing it down, for manual inspection")
 	checkConfig := flag.Bool("check-config", false, "validate the config file and exit, without fetching, restoring, or touching Docker")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("lazarus", version)
+		return
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
