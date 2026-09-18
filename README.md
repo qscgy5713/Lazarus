@@ -79,6 +79,7 @@ FAIL  production-mysql [checks] check "customers table is populated" failed: got
 | `--config` | `lazarus.yml` | 設定檔路徑 |
 | `--target` | (全部) | 只驗證指定的一個目標 |
 | `--json` | `false` | 機器可讀的輸出，給 CI/腳本用 |
+| `--quiet` | `false` | 只印出失敗的目標跟最後的統計，通過的目標完全不提（跟 `--json` 一起用時被忽略——JSON 本來就是給機器解析的完整資料） |
 | `--keep-on-failure` | `false` | 目標失敗時保留 sandbox 容器（或 SQLite 暫存檔）不清掉，方便直接連進去查資料（見下方「保留失敗現場除錯」） |
 | `--check-config` | `false` | 只檢查設定檔對不對就結束，不抓備份、不還原、完全不碰 Docker（見下方「設定檔檢查」） |
 | `--version` | `false` | 印出版本後結束，不需要設定檔 |
@@ -298,6 +299,12 @@ LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx ./lazarus --config laza
 
 因為 exit code 有分好，也可以接到現有的監控系統上（例如
 [ChronosMonitor](https://github.com/qscgy5713/ChronosMonitor) 之類的任務監控工具）。
+
+目標數量一多、平常又幾乎都會通過時，`--quiet` 能讓 cron 寄來的信只在真的有問題時才有內容：
+
+```cron
+0 6 * * * cd /opt/lazarus && ./lazarus --config lazarus.yml --quiet
+```
 
 在 CI 裡對設定檔改動跑一次快速檢查，不需要 Docker：
 

@@ -29,6 +29,7 @@ func main() {
 	configPath := flag.String("config", "lazarus.yml", "path to the config file")
 	targetName := flag.String("target", "", "verify only this target (default: all)")
 	asJSON := flag.Bool("json", false, "machine-readable output")
+	quiet := flag.Bool("quiet", false, "only print failing targets and the final tally (ignored with --json, which is already machine-readable)")
 	keepOnFailure := flag.Bool("keep-on-failure", false, "keep a failing target's sandbox container (or SQLite temp file) instead of tearing it down, for manual inspection")
 	checkConfig := flag.Bool("check-config", false, "validate the config file and exit, without fetching, restoring, or touching Docker")
 	showVersion := flag.Bool("version", false, "print the version and exit")
@@ -93,7 +94,7 @@ func main() {
 	if *asJSON {
 		allPassed = report.JSON(os.Stdout, results)
 	} else {
-		allPassed = report.Text(os.Stdout, results)
+		allPassed = report.Text(os.Stdout, results, *quiet)
 	}
 
 	sendNotification(ctx, cfg.Notify, results)

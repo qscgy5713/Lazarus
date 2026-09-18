@@ -13,16 +13,26 @@ import (
 )
 
 // Text writes a human-readable summary and reports whether everything passed.
-func Text(w io.Writer, results []verify.Result) bool {
+// quiet suppresses every line for a passing target — no PASS line, no
+// backup/restore/check detail — so a cron run where everything is fine
+// produces just the final tally instead of one block per target. A failing
+// target is always printed in full regardless of quiet: a run worth
+// investigating is exactly the noise quiet mode isn't meant to cut.
+func Text(w io.Writer, results []verify.Result, quiet bool) bool {
 	allPassed := true
+	printedAny := false
 
 	for _, r := range results {
 		if r.Passed {
+			if quiet {
+				continue
+			}
 			fmt.Fprintf(w, "PASS  %s (%s)\n", r.Target, r.Duration.Round(time.Millisecond))
 		} else {
 			allPassed = false
 			fmt.Fprintf(w, "FAIL  %s [%s] %v\n", r.Target, r.Stage, r.Err)
 		}
+		printedAny = true
 
 		if r.Backup != nil {
 			fmt.Fprintf(w, "      backup: %s (%s, %s old)\n",
@@ -55,7 +65,14 @@ func Text(w io.Writer, results []verify.Result) bool {
 	}
 
 	passed, failed := tally(results)
-	fmt.Fprintf(w, "\n%d passed, %d failed\n", passed, failed)
+	// The blank separator line only makes sense after at least one
+	// target's own block — with --quiet and nothing to report, skipping it
+	// keeps a fully-passing run's output to the single tally line it
+	// promises, instead of a stray leading blank line.
+	if printedAny {
+		fmt.Fprintln(w)
+	}
+	fmt.Fprintf(w, "%d passed, %d failed\n", passed, failed)
 
 	return allPassed
 }
