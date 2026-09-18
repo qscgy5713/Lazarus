@@ -30,6 +30,7 @@ archives:
         formats: [zip]
     files:
       - README.md
+      - LICENSE
       - lazarus.example.yml
 
 checksum:

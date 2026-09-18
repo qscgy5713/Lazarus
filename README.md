@@ -324,3 +324,7 @@ goreleaser release --snapshot --clean --skip=publish
 ```
 
 `.goreleaser.yaml` 的設定也會在每次 CI 跑的時候用 `goreleaser check` 跟一次單一平台的快照建置驗證過，設定檔壞掉不用等到真的推 tag 才發現。
+
+## 授權
+
+[MIT](LICENSE)
