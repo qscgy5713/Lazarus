@@ -22,7 +22,10 @@ notify:
   # environment instead, so the URL never has to live in a file.
   webhook_url: ""
 
-  # slack (default, also works for Mattermost etc.) | discord | generic
+  # Optional bearer token for webhook authentication (or set LAZARUS_API_KEY).
+  api_key: ""
+
+  # slack (default) | discord | generic | lazarus (for Lazarus Control Plane)
   format: slack
 
   # on_failure (default) | always | never

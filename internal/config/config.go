@@ -57,7 +57,11 @@ type Notify struct {
 	// doesn't have to live in a file.
 	WebhookURL string `yaml:"webhook_url"`
 
-	// Format is "slack" (default), "discord", or "generic" (raw JSON).
+	// APIKey is an optional bearer token sent with webhook requests. The
+	// LAZARUS_API_KEY environment variable overrides it.
+	APIKey string `yaml:"api_key"`
+
+	// Format is "slack" (default), "discord", "generic" (raw JSON), or "lazarus".
 	Format string `yaml:"format"`
 
 	// When is "on_failure" (default), "always", or "never".
@@ -67,8 +71,11 @@ type Notify struct {
 	When string `yaml:"when"`
 }
 
-const webhookURLEnvVar = "LAZARUS_WEBHOOK_URL"
-const gpgPassphraseEnvVar = "LAZARUS_GPG_PASSPHRASE"
+const (
+	webhookURLEnvVar    = "LAZARUS_WEBHOOK_URL"
+	apiKeyEnvVar        = "LAZARUS_API_KEY"
+	gpgPassphraseEnvVar = "LAZARUS_GPG_PASSPHRASE"
+)
 
 const (
 	defaultNotifyFormat = "slack"
@@ -253,14 +260,17 @@ func (c *Config) applyNotifyDefaults() error {
 	if fromEnv := os.Getenv(webhookURLEnvVar); fromEnv != "" {
 		c.Notify.WebhookURL = fromEnv
 	}
+	if fromEnv := os.Getenv(apiKeyEnvVar); fromEnv != "" {
+		c.Notify.APIKey = fromEnv
+	}
 
 	if c.Notify.Format == "" {
 		c.Notify.Format = defaultNotifyFormat
 	}
 	switch c.Notify.Format {
-	case "slack", "discord", "generic":
+	case "slack", "discord", "generic", "lazarus":
 	default:
-		return fmt.Errorf("notify.format %q is not slack, discord or generic", c.Notify.Format)
+		return fmt.Errorf("notify.format %q is not slack, discord, generic or lazarus", c.Notify.Format)
 	}
 
 	if c.Notify.When == "" {

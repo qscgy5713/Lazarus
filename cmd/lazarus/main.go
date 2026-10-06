@@ -105,7 +105,7 @@ func main() {
 }
 
 func sendNotification(ctx context.Context, cfg config.Notify, results []verify.Result) {
-	notifier := notify.New(cfg.WebhookURL, notify.Format(cfg.Format), notify.When(cfg.When))
+	notifier := notify.New(cfg.WebhookURL, notify.Format(cfg.Format), notify.When(cfg.When)).WithAPIKey(cfg.APIKey)
 	if !notifier.ShouldSend(results) {
 		return
 	}

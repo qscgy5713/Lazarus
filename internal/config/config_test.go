@@ -597,3 +597,29 @@ func TestLoadRejectsInvalidSizeDriftThreshold(t *testing.T) {
 		})
 	}
 }
+
+func TestNotifyAPIKeyAndLazarusFormat(t *testing.T) {
+	path := writeConfig(t, `
+notify:
+  webhook_url: "https://controlplane.example.com/api/v1/reports"
+  api_key: "lz_test_key_123"
+  format: lazarus
+  when: always
+targets:
+  - name: prod-db
+    engine: postgres
+    path: /backups/prod.sql
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.Notify.APIKey != "lz_test_key_123" {
+		t.Errorf("Notify.APIKey = %q, want %q", cfg.Notify.APIKey, "lz_test_key_123")
+	}
+	if cfg.Notify.Format != "lazarus" {
+		t.Errorf("Notify.Format = %q, want %q", cfg.Notify.Format, "lazarus")
+	}
+}

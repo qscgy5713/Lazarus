@@ -256,3 +256,51 @@ func TestSendReturnsErrorOnUnreachableHost(t *testing.T) {
 		t.Fatal("Send() error = nil, want an error when the webhook is unreachable")
 	}
 }
+
+func TestSendWithAPIKey(t *testing.T) {
+	var authHeader, keyHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader = r.Header.Get("Authorization")
+		keyHeader = r.Header.Get("X-Lazarus-Key")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	n := New(srv.URL, FormatGeneric, WhenAlways).WithAPIKey("test-secret-key")
+	if err := n.Send(context.Background(), []verify.Result{passing("ok-db")}); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	if authHeader != "Bearer test-secret-key" {
+		t.Errorf("Authorization header = %q, want %q", authHeader, "Bearer test-secret-key")
+	}
+	if keyHeader != "test-secret-key" {
+		t.Errorf("X-Lazarus-Key header = %q, want %q", keyHeader, "test-secret-key")
+	}
+}
+
+func TestSendLazarusFormatEnriched(t *testing.T) {
+	var received []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	n := New(srv.URL, FormatLazarus, WhenAlways)
+	results := []verify.Result{passing("postgres-prod")}
+	if err := n.Send(context.Background(), results); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	var payload genericPayload
+	if err := json.Unmarshal(received, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.Timestamp == "" {
+		t.Error("payload.Timestamp is empty")
+	}
+	if len(payload.Results) != 1 || payload.Results[0].Target != "postgres-prod" {
+		t.Errorf("unexpected results in payload: %+v", payload.Results)
+	}
+}

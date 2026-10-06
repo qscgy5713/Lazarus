@@ -11,10 +11,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"lazarus/internal/backup"
 	"lazarus/internal/verify"
 )
 
@@ -25,6 +27,7 @@ const (
 	FormatSlack   Format = "slack"
 	FormatDiscord Format = "discord"
 	FormatGeneric Format = "generic"
+	FormatLazarus Format = "lazarus"
 )
 
 // When decides which runs are worth a message.
@@ -46,6 +49,7 @@ type Notifier struct {
 	url    string
 	format Format
 	when   When
+	apiKey string
 	client *http.Client
 }
 
@@ -56,6 +60,14 @@ func New(url string, format Format, when When) *Notifier {
 		when:   when,
 		client: &http.Client{Timeout: 10 * time.Second},
 	}
+}
+
+// WithAPIKey attaches an authentication token/key to outgoing webhook requests.
+func (n *Notifier) WithAPIKey(key string) *Notifier {
+	if n != nil {
+		n.apiKey = key
+	}
+	return n
 }
 
 // ShouldSend reports whether this run's outcome warrants a message.
@@ -83,6 +95,10 @@ func (n *Notifier) Send(ctx context.Context, results []verify.Result) error {
 		return fmt.Errorf("build webhook request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if n.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+n.apiKey)
+		req.Header.Set("X-Lazarus-Key", n.apiKey)
+	}
 
 	resp, err := n.client.Do(req)
 	if err != nil {
@@ -100,7 +116,7 @@ func (n *Notifier) buildPayload(results []verify.Result) ([]byte, error) {
 	switch n.format {
 	case FormatDiscord:
 		return json.Marshal(map[string]string{"content": FormatMessage(results)})
-	case FormatGeneric:
+	case FormatGeneric, FormatLazarus:
 		return json.Marshal(buildGeneric(results))
 	default: // Slack, and anything Slack-compatible (Mattermost, etc.)
 		return json.Marshal(map[string]string{"text": FormatMessage(results)})
@@ -108,27 +124,71 @@ func (n *Notifier) buildPayload(results []verify.Result) ([]byte, error) {
 }
 
 type genericPayload struct {
-	Passed  bool            `json:"passed"`
-	Total   int             `json:"total"`
-	Failed  int             `json:"failed"`
-	Results []genericResult `json:"results"`
+	Passed    bool            `json:"passed"`
+	Total     int             `json:"total"`
+	Failed    int             `json:"failed"`
+	Hostname  string          `json:"hostname,omitempty"`
+	Timestamp string          `json:"timestamp"`
+	Results   []genericResult `json:"results"`
 }
 
 type genericResult struct {
-	Target string `json:"target"`
+	Target            string         `json:"target"`
+	Passed            bool           `json:"passed"`
+	Stage             string         `json:"stage"`
+	Error             string         `json:"error,omitempty"`
+	BackupPath        string         `json:"backup_path,omitempty"`
+	BackupSize        int64          `json:"backup_size,omitempty"`
+	BackupSizeHuman   string         `json:"backup_size_human,omitempty"`
+	BackupAge         string         `json:"backup_age,omitempty"`
+	DurationMs        int64          `json:"duration_ms"`
+	RestoreDurationMs int64          `json:"restore_duration_ms,omitempty"`
+	Checks            []genericCheck `json:"checks,omitempty"`
+	DebugHint         string         `json:"debug_hint,omitempty"`
+}
+
+type genericCheck struct {
+	Name   string `json:"name"`
 	Passed bool   `json:"passed"`
-	Stage  string `json:"stage"`
-	Error  string `json:"error,omitempty"`
+	Value  int64  `json:"value"`
+	Reason string `json:"reason,omitempty"`
 }
 
 func buildGeneric(results []verify.Result) genericPayload {
-	payload := genericPayload{Total: len(results), Passed: !anyFailed(results)}
+	host, _ := os.Hostname()
+	payload := genericPayload{
+		Total:     len(results),
+		Passed:    !anyFailed(results),
+		Hostname:  host,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
 
 	for _, r := range results {
-		gr := genericResult{Target: r.Target, Passed: r.Passed, Stage: string(r.Stage)}
+		gr := genericResult{
+			Target:            r.Target,
+			Passed:            r.Passed,
+			Stage:             string(r.Stage),
+			DurationMs:        r.Duration.Milliseconds(),
+			RestoreDurationMs: r.RestoreDuration.Milliseconds(),
+			DebugHint:         r.DebugHint,
+		}
 		if r.Err != nil {
 			gr.Error = r.Err.Error()
 			payload.Failed++
+		}
+		if r.Backup != nil {
+			gr.BackupPath = r.Backup.Path
+			gr.BackupSize = r.Backup.Size
+			gr.BackupSizeHuman = backup.HumanSize(r.Backup.Size)
+			gr.BackupAge = r.Backup.Age(time.Now()).Round(time.Second).String()
+		}
+		for _, c := range r.Checks {
+			gr.Checks = append(gr.Checks, genericCheck{
+				Name:   c.Name,
+				Passed: c.Passed,
+				Value:  c.Value,
+				Reason: c.Reason,
+			})
 		}
 		payload.Results = append(payload.Results, gr)
 	}
