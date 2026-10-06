@@ -59,7 +59,7 @@ func (s *Server) checkAuth(r *http.Request) bool {
 	if strings.HasPrefix(auth, "Bearer ") && strings.TrimPrefix(auth, "Bearer ") == s.cfg.APIKey {
 		return true
 	}
-	if r.Header.Get("X-Lazarus-Key") == s.cfg.APIKey {
+	if r.Header.Get("X-Lazarus-Key") == s.cfg.APIKey || r.Header.Get("X-API-Key") == s.cfg.APIKey {
 		return true
 	}
 	return false

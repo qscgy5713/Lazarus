@@ -88,16 +88,30 @@ func TestDecryptCleansUpTempFileOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	encPath := encryptSymmetric(t, dir, "backup", "secret data", "the-real-passphrase")
 
-	before, _ := os.ReadDir(os.TempDir())
+	countLazarusTemp := func() int {
+		entries, err := os.ReadDir(os.TempDir())
+		if err != nil {
+			return 0
+		}
+		cnt := 0
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), "lazarus-decrypt-") {
+				cnt++
+			}
+		}
+		return cnt
+	}
+
+	before := countLazarusTemp()
 
 	_, _, err := Decrypt(context.Background(), encPath, "wrong-passphrase")
 	if err == nil {
 		t.Fatal("expected an error")
 	}
 
-	after, _ := os.ReadDir(os.TempDir())
-	if len(after) > len(before) {
-		t.Errorf("temp dir has %d entries after a failed decrypt, had %d before — a temp file was left behind", len(after), len(before))
+	after := countLazarusTemp()
+	if after > before {
+		t.Errorf("temp dir has %d lazarus-decrypt entries after a failed decrypt, had %d before — a temp file was left behind", after, before)
 	}
 }
 

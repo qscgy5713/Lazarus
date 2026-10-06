@@ -1,0 +1,83 @@
+name: 'Lazarus Backup Restoration Verification'
+description: 'Automated database backup restoration drill runner for PostgreSQL, MySQL, and SQLite'
+author: 'qscgy5713'
+
+branding:
+  icon: 'shield'
+  color: 'indigo'
+
+inputs:
+  config:
+    description: 'Path to the lazarus.yml configuration file'
+    required: false
+    default: 'lazarus.yml'
+  target:
+    description: 'Verify only a single target database (default: verify all)'
+    required: false
+    default: ''
+  version:
+    description: 'Lazarus release version to use (e.g. v1.0.0 or latest)'
+    required: false
+    default: 'latest'
+  webhook-url:
+    description: 'Webhook endpoint for reporting verification outcomes'
+    required: false
+    default: ''
+  api-key:
+    description: 'API key / Bearer token for webhook authentication'
+    required: false
+    default: ''
+  gpg-passphrase:
+    description: 'Passphrase for decrypting GPG encrypted backup archives'
+    required: false
+    default: ''
+
+outputs:
+  passed:
+    description: 'Whether all backup restoration drills passed successfully (true/false)'
+    value: ${{ steps.run-lazarus.outputs.passed }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Download or build Lazarus binary
+      shell: bash
+      run: |
+        if command -v lazarus &> /dev/null; then
+          echo "Lazarus already installed at $(which lazarus)"
+          exit 0
+        fi
+
+        # Download from releases or build with go if Go is available
+        if command -v go &> /dev/null; then
+          echo "Building Lazarus from source..."
+          go build -o /usr/local/bin/lazarus "${{ github.action_path }}/cmd/lazarus"
+        else
+          echo "Go not found, downloading latest Lazarus release..."
+          ARCH="amd64"
+          OS="linux"
+          if [[ "$OSTYPE" == "darwin"* ]]; then OS="darwin"; fi
+          URL="https://github.com/qscgy5713/Lazarus/releases/latest/download/Lazarus_${OS}_${ARCH}.tar.gz"
+          curl -sSL "$URL" | tar -xz -C /usr/local/bin lazarus || true
+        fi
+
+    - name: Execute Backup Restoration Drill
+      id: run-lazarus
+      shell: bash
+      env:
+        LAZARUS_WEBHOOK_URL: ${{ inputs.webhook-url }}
+        LAZARUS_API_KEY: ${{ inputs.api-key }}
+        LAZARUS_GPG_PASSPHRASE: ${{ inputs.gpg-passphrase }}
+      run: |
+        ARGS=(--config "${{ inputs.config }}")
+        if [ -n "${{ inputs.target }}" ]; then
+          ARGS+=(--target "${{ inputs.target }}")
+        fi
+
+        echo "Running: lazarus ${ARGS[*]}"
+        if lazarus "${ARGS[@]}"; then
+          echo "passed=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "passed=false" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi

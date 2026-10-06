@@ -1,0 +1,20 @@
+# Multi-stage build for Lazarus Control Plane server
+FROM golang:1.24-alpine AS build
+
+WORKDIR /src
+COPY go.mod go.sum* ./
+RUN go mod download || true
+COPY . .
+RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /lazarus-server ./cmd/server
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata
+
+WORKDIR /app
+COPY --from=build /lazarus-server /usr/local/bin/lazarus-server
+
+EXPOSE 8080
+VOLUME ["/data"]
+
+ENTRYPOINT ["lazarus-server"]
+CMD ["-addr", ":8080", "-state", "/data/lazarus-server.json"]

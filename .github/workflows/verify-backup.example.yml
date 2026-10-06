@@ -1,0 +1,26 @@
+name: Weekly Backup Restoration Drill
+
+on:
+  schedule:
+    # Run every Sunday at 04:00 UTC
+    - cron: '0 4 * * 0'
+  workflow_dispatch: # Allow manual trigger from GitHub UI
+
+jobs:
+  verify-backups:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Run Lazarus Backup Verification
+        uses: qscgy5713/Lazarus@main
+        with:
+          config: 'lazarus.yml'
+          webhook-url: ${{ secrets.LAZARUS_WEBHOOK_URL }}
+          api-key: ${{ secrets.LAZARUS_API_KEY }}

@@ -15,6 +15,36 @@
 
 Lazarus 就是定期幫你跑那一次還原。
 
+```text
+  ┌────────────────────────────────────────────────────────┐
+  │                    Backup Sources                      │
+  │        (AWS S3 / GCP GCS / SFTP / Local Mount)         │
+  └───────────────────────────┬────────────────────────────┘
+                              │ fetch_command / path
+                              ▼
+  ┌────────────────────────────────────────────────────────┐
+  │                   Lazarus Runner                       │
+  │        (Scheduled Cron / CI / GitHub Action)           │
+  └───────┬───────────────────┬───────────────────┬────────┘
+          │ 1. Spawns         │ 2. Restores       │ 3. Asserts
+          ▼                   ▼                   ▼
+┌───────────────────┐ ┌───────────────────┐ ┌──────────────────┐
+│ Postgres Sandbox  │ │  MySQL Sandbox    │ │  SQLite Sandbox  │
+│ (Disposable Cont.)│ │ (Disposable Cont.)│ │ (Ephemeral Copy) │
+└─────────┬─────────┘ └─────────┬─────────┘ └─────────┬────────┘
+          │                   │                   │
+          └───────────────────┼───────────────────┘
+                              │ 4. Verification Report
+                              ▼
+  ┌────────────────────────────────────────────────────────┐
+  │             Lazarus Control Plane (Web UI)             │
+  │  • 全時態備份健康監控 (Status Dashboard)             │
+  │  • Dead Man's Snitch 逾期未報偵測 (Silent Failure)     │
+  │  • 一鍵下載合規稽核證明 (SOC 2 / ISO 27001 Audit)       │
+  │  • Slack / Discord / Webhook 即時告警                  │
+  └────────────────────────────────────────────────────────┘
+```
+
 ## 運作方式
 
 對每個設定的目標：
@@ -333,14 +363,28 @@ LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx
 
 ## 用 Docker Compose 部署
 
-repo 根目錄的 [`docker-compose.yml`](docker-compose.yml) 把 Lazarus 自己包成容器執行。Lazarus 還是得跟一個真正的 Docker daemon 對話才能起 sandbox 容器，所以需要掛載 `/var/run/docker.sock`——起出來的 sandbox 容器是跑在**主機**的 daemon 上，跟 Lazarus 自己的容器是兄弟關係，不是巢狀在裡面：
+repo 根目錄的 [`docker-compose.yml`](docker-compose.yml) 預先配置好了兩個服務：
+1. **`server`**：Lazarus Control Plane 視覺化儀表板與合規狀態中心（常駐背景服務）
+2. **`lazarus`**：Lazarus CLI 驗證 runner（執行一次性還原演練）
+
+### 啟動 Control Plane 監控儀表板
+
+```bash
+docker compose up -d server
+```
+
+服務預設在 `http://localhost:8080` 啟動，瀏覽器直接打開即可看到視覺化儀表板。
+
+### 執行備份還原演練
+
+Lazarus runner 容器需要跟主機的 Docker daemon 通訊以啟動拋棄式 sandbox 資料庫容器，因此掛載了 `/var/run/docker.sock`：
 
 ```bash
 cp lazarus.example.yml lazarus.yml   # 改成你的備份路徑
 docker compose run --rm lazarus
 ```
 
-Compose 本身不會幫你排程，`docker compose run --rm` 只是跑一次就結束——真正的定期執行還是要靠主機的 cron 呼叫這行指令，或用 systemd timer 呼叫它。
+Compose 本身不會幫你排程，`docker compose run --rm lazarus` 是跑完即結束——真正的定期執行可以交給主機的 cron、systemd timer，或透過下方介紹的 GitHub Actions 執行。
 
 `state_file` 建議指到掛載的 volume 路徑（例如 `/var/lib/lazarus/lazarus-state.json`），不然每次 `--rm` 都會把 size-drift 的基準值一起丟掉。
 
@@ -356,6 +400,128 @@ docker compose run --rm --entrypoint sh \
 ```
 
 然後把 `docker-compose.yml` 裡註解掉的 `lazarus-gnupg` volume 取消註解（設定跟掛載都要），之後 `docker compose run --rm lazarus` 就會用這個持久化的金鑰圈解密。
+
+## 🎛️ Lazarus Control Plane 儀表板
+
+當備份驗證演練分散在多台主機、Kubernetes 叢集或多條 CI/CD 流水線時，**Lazarus Control Plane** 提供集中視覺化監控與災難復原合規治理。
+
+```text
+  +-----------------------------------------------------------------------+
+  |  ⚡ Lazarus Control Plane — Disaster Recovery Verification Dashboard    |
+  +-----------------------------------------------------------------------+
+  |  Total: 3 Targets  |  Healthy: 2  |  Failing: 0  |  Overdue Alert: 1   |
+  +-----------------------------------------------------------------------+
+  |  Target               Status    Backup Size    Restored In   Last Drill|
+  |  production-postgres  PASS      14.4 KB        1m 42s        10m ago   |
+  |  analytics-mysql      PASS      2.1 KB         892ms         1h ago    |
+  |  auth-sqlite          OVERDUE   --             --            2d ago ⚠️ |
+  +-----------------------------------------------------------------------+
+  |  [ Export Compliance Report (SOC 2 / ISO 27001) ]                     |
+  +-----------------------------------------------------------------------+
+```
+
+### 核心功能
+
+- **全時態健康儀表板 (Health Overview)**：直觀掌握各資料庫目標最新狀態（`PASS` / `FAIL` / `OVERDUE`）、備份大小變化趨勢與還原耗時。
+- **Dead Man's Snitch（逾期靜默失效偵測）**：傳統監控只在腳本報錯時發出警報，但如果 crontab 被誤刪、伺服器離線或備份腳本死當，監控系統根本收不到任何通知。Control Plane 在目標超過預期時間（預設 26 小時）未收到還原報告時，自動標記為 `OVERDUE` 並亮起警報。
+- **合規稽核證明一鍵產生 (Audit Proof)**：內建合規報告匯出功能，將歷史還原紀錄整合成具時間戳記與資料筆數校驗的災難復原演練報告，直接提供給 SOC 2 Type II、ISO 27001 或金融監管稽核人員。
+- **純 Go 輕量單一執行檔**：無需額外架設 PostgreSQL/MySQL 或 Redis，自帶內嵌 Web 介面與持久化狀態，資源消耗低於 20MB RAM。
+
+### 獨立執行檔啟動
+
+除了 Docker Compose 外，也可以直接以執行檔啟動 Control Plane：
+
+```bash
+# 建置並啟動服務
+go build -o lazarus-server ./cmd/server
+./lazarus-server -addr :8080 -api-key "your-super-secret-key" -overdue 26h
+```
+
+參數說明：
+- `-addr`: HTTP 監聽位址（預設 `:8080`，可透過環境變數 `PORT` 或 `ADDR` 設定）
+- `-api-key`: Webhook 驗證金鑰（可透過環境變數 `SERVER_API_KEY` 設定；支援 `X-API-Key`、`X-Lazarus-Key` 或 `Authorization: Bearer <token>`）
+- `-state`: 狀態持久化 JSON 檔案路徑（預設 `lazarus-server.json`）
+- `-overdue`: 逾期標記閥值時間（預設 `26h`）
+
+### 將 Lazarus 演練回報至 Control Plane
+
+在 `lazarus.yml` 中設定 webhook：
+
+```yaml
+webhook:
+  url: "http://control-plane.internal:8080/api/v1/reports"
+  auth_header: "X-API-Key"
+  auth_token: "your-super-secret-key"
+```
+
+或者直接透過環境變數注入（推薦在 CI / 排程環境中使用）：
+
+```bash
+export LAZARUS_WEBHOOK_URL="http://control-plane.internal:8080/api/v1/reports"
+export LAZARUS_API_KEY="your-super-secret-key"
+./lazarus --config lazarus.yml
+```
+
+---
+
+## 🤖 官方 GitHub Action
+
+若你的備份儲存在 AWS S3、Google Cloud Storage、Azure Blob，或是在 GitHub Actions 中排程備份，你可以直接使用官方 GitHub Action 在 GitHub-hosted runner 上自動啟動拋棄式容器進行演練，**零維護成本、無需專屬主機**。
+
+### 使用範例（定期排程演練）
+
+建立 `.github/workflows/verify-backup.yml`：
+
+```yaml
+name: Weekly Database Backup Restoration Drill
+
+on:
+  schedule:
+    # 每週日清晨 04:00 UTC 定期驗證
+    - cron: '0 4 * * 0'
+  workflow_dispatch: # 支援在 GitHub 介面手動按鈕觸發
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 設定雲端存取憑證以供 fetch_command 下載備份
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      # 執行 Lazarus 備份還原演練
+      - name: Run Lazarus Restore Drill
+        uses: qscgy5713/Lazarus@main
+        with:
+          config: 'lazarus.yml'
+          webhook-url: ${{ secrets.LAZARUS_WEBHOOK_URL }}
+          api-key: ${{ secrets.LAZARUS_API_KEY }}
+          gpg-passphrase: ${{ secrets.LAZARUS_GPG_PASSPHRASE }}
+```
+
+### Action 參數一覽
+
+| 參數 | 預設值 | 說明 |
+|---|---|---|
+| `config` | `lazarus.yml` | 設定檔路徑 |
+| `target` | (全部) | 若只需演練特定單一資料庫目標，填入目標名稱 |
+| `version` | `latest` | 指定下載之 Lazarus 版本標籤（例如 `v1.0.0`） |
+| `webhook-url` | (無) | 回報結果至 Control Plane 或 Webhook 的 URL |
+| `api-key` | (無) | Control Plane 的驗證金鑰 |
+| `gpg-passphrase` | (無) | 解密 GPG 加密備份用的密語 |
+
+### Action 輸出
+
+- `passed`: `true` 或 `false`。可用於後續工作步驟（例如演練失敗時觸發 PagerDuty 或建立 GitHub Issue）。
+
+---
 
 ## 設計上的取捨
 

@@ -8,6 +8,20 @@
 # README) calling:
 #   docker compose run --rm lazarus
 services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: lazarus-server
+    ports:
+      - "8080:8080"
+    environment:
+      - SERVER_API_KEY
+      - OVERDUE_THRESHOLD=26h
+    volumes:
+      - lazarus-server-data:/data
+    restart: unless-stopped
+
   lazarus:
     build: .
     volumes:
@@ -19,20 +33,11 @@ services:
       # own filesystem) every time.
       - lazarus-state:/var/lib/lazarus
       - /var/run/docker.sock:/var/run/docker.sock
-      # Only needed for a GPG-encrypted backup that uses a public/private
-      # key pair rather than a passphrase: this container starts with no
-      # keyring of its own, so without somewhere to keep one, the private
-      # key that decrypts them simply isn't anywhere. Not needed at all for
-      # LAZARUS_GPG_PASSPHRASE (symmetric encryption). Bind-mounting a live
-      # ~/.gnupg directly does *not* work — its gpg-agent socket files
-      # don't survive being mounted into a container — so this is a plain
-      # named volume instead; see "用 Docker Compose 部署" in the README
-      # for the one-time import step that populates it.
-      # - lazarus-gnupg:/root/.gnupg
     environment:
       - LAZARUS_WEBHOOK_URL
+      - LAZARUS_API_KEY
       - LAZARUS_GPG_PASSPHRASE
 
 volumes:
+  lazarus-server-data:
   lazarus-state:
-  # lazarus-gnupg:
