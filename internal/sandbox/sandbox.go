@@ -43,9 +43,18 @@ var nameCounter atomic.Uint64
 // Start launches a container for engine using image and waits until the
 // database inside it is accepting connections.
 func Start(ctx context.Context, engine config.Engine, image string) (*Sandbox, error) {
+	return StartWithMount(ctx, engine, image, "")
+}
+
+// StartWithMount launches a container, optionally mounting a host directory to /data in the container.
+func StartWithMount(ctx context.Context, engine config.Engine, image, dataDir string) (*Sandbox, error) {
 	name := fmt.Sprintf("lazarus-verify-%d-%d", time.Now().UnixNano(), nameCounter.Add(1))
 
 	args := []string{"run", "--detach", "--name", name, "--rm"}
+	if dataDir != "" {
+		args = append(args, "-v", dataDir+":/data")
+	}
+
 	switch engine {
 	case config.EnginePostgres:
 		args = append(args,
@@ -58,10 +67,15 @@ func Start(ctx context.Context, engine config.Engine, image string) (*Sandbox, e
 			"--env", "MYSQL_ROOT_PASSWORD="+dbPassword,
 			"--env", "MYSQL_DATABASE="+dbName,
 		)
+	case config.EngineRedis:
+		// Redis in sandbox runs with no auth
 	default:
 		return nil, fmt.Errorf("unsupported engine %q", engine)
 	}
 	args = append(args, image)
+	if engine == config.EngineRedis {
+		args = append(args, "redis-server", "--dir", "/data", "--appendonly", "no", "--save", "")
+	}
 
 	if out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("start %s sandbox (%s): %w: %s", engine, image, err, strings.TrimSpace(string(out)))
@@ -152,6 +166,8 @@ func (s *Sandbox) ping(ctx context.Context) error {
 			"mysql", "--user=root", "--password=" + dbPassword,
 			"--skip-column-names", "--batch", "--execute=SELECT 1", dbName,
 		}
+	case config.EngineRedis:
+		args = []string{"redis-cli", "PING"}
 	}
 
 	_, err := s.Exec(ctx, "", args...)

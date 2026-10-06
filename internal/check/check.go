@@ -97,6 +97,12 @@ func query(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, sql s
 			"--execute=" + sql,
 			sandbox.DBName(),
 		}
+	case config.EngineRedis:
+		parts := strings.Fields(sql)
+		if len(parts) == 0 {
+			return "", fmt.Errorf("empty redis command")
+		}
+		args = append([]string{"redis-cli"}, parts...)
 	default:
 		return "", fmt.Errorf("unsupported engine %q", engine)
 	}

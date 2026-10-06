@@ -1,0 +1,41 @@
+name: Bug Report
+description: 回報 Lazarus 還原驗證、沙盒容器或 Control Plane 的異常行為
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感謝你花時間回報 Bug！請提供詳細的重現步驟與設定檔（請隱去機密資訊）。
+  - type: dropdown
+    id: database-type
+    attributes:
+      label: 資料庫類型 (Database Engine)
+      options:
+        - PostgreSQL
+        - MySQL
+        - SQLite
+        - Redis
+        - Control Plane Web UI
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 問題描述 (Problem Description)
+      placeholder: 具體發生了什麼非預期的錯誤？
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: lazarus.yml 設定檔內容 (請遮蔽敏感密碼)
+      render: yaml
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: 終端機日誌輸出 (Terminal / Docker Logs)
+      render: shell
+    validations:
+      required: false

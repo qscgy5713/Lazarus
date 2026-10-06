@@ -13,6 +13,7 @@ import (
 	"lazarus/internal/check"
 	"lazarus/internal/config"
 	"lazarus/internal/fetch"
+	"lazarus/internal/redischeck"
 	"lazarus/internal/restore"
 	"lazarus/internal/sandbox"
 	"lazarus/internal/sqlitecheck"
@@ -145,6 +146,35 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 		runChecks = func(ctx context.Context) []check.Result {
 			return sqlitecheck.RunChecks(ctx, path, target.Checks)
 		}
+	} else if target.Engine == config.EngineRedis && file.Format == backup.FormatRedisRDB {
+		result.Stage = StageRestore
+		restoreStarted := time.Now()
+
+		rdbDir, cleanupRDB, err := redischeck.Prepare(ctx, file, gpgPassphrase)
+		if err != nil {
+			result.Err = err
+			return
+		}
+		defer cleanupRDB()
+
+		result.Stage = StageSandbox
+		sb, err := sandbox.StartWithMount(ctx, target.Engine, target.Image, rdbDir)
+		if err != nil {
+			result.Err = err
+			return
+		}
+		defer func() {
+			if keepOnFailure && result.Err != nil {
+				result.DebugHint = debugHint(sb)
+				return
+			}
+			sb.Stop()
+		}()
+
+		result.RestoreDuration = time.Since(restoreStarted)
+		runChecks = func(ctx context.Context) []check.Result {
+			return check.RunAll(ctx, sb, target.Engine, target.Checks)
+		}
 	} else {
 		result.Stage = StageSandbox
 		sb, err := sandbox.Start(ctx, target.Engine, target.Image)
@@ -201,6 +231,8 @@ func debugHint(sb *sandbox.Sandbox) string {
 	case config.EngineMySQL:
 		return fmt.Sprintf("docker exec -it %s mysql --user=root --password=%s %s",
 			sb.Name, sandbox.Password(), sandbox.DBName())
+	case config.EngineRedis:
+		return fmt.Sprintf("docker exec -it %s redis-cli", sb.Name)
 	default: // Postgres
 		return fmt.Sprintf("docker exec -it %s psql --username %s --dbname %s",
 			sb.Name, sandbox.User(), sandbox.DBName())

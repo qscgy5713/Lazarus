@@ -119,3 +119,12 @@ targets:
       - name: users table is populated
         sql: SELECT count(*) FROM users
         expect_min: 1
+
+  - name: cache-redis
+    engine: redis
+    path: /backups/redis/dump-*.rdb
+    max_age: 26h
+    checks:
+      - name: database has keys
+        command: DBSIZE
+        expect_min: 1

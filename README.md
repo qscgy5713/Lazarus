@@ -1,5 +1,11 @@
 # Lazarus
 
+[![GitHub Release](https://img.shields.io/github/v/release/qscgy5713/Lazarus?color=blue&style=flat-square)](https://github.com/qscgy5713/Lazarus/releases)
+[![CI Status](https://img.shields.io/github/actions/workflow/status/qscgy5713/Lazarus/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/qscgy5713/Lazarus/actions/workflows/ci.yml)
+[![Docker GHCR](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker&style=flat-square)](https://github.com/qscgy5713/Lazarus/pkgs/container/lazarus-server)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/qscgy5713/Lazarus?style=flat-square)](https://goreportcard.com/report/github.com/qscgy5713/Lazarus)
+
 證明你的資料庫備份**真的能還原**——不是「備份腳本有跑完」，是真的把 dump 灌進一個乾淨的資料庫、確認資料真的在裡面。
 
 ## 為什麼需要這個
@@ -28,20 +34,20 @@ Lazarus 就是定期幫你跑那一次還原。
   └───────┬───────────────────┬───────────────────┬────────┘
           │ 1. Spawns         │ 2. Restores       │ 3. Asserts
           ▼                   ▼                   ▼
-┌───────────────────┐ ┌───────────────────┐ ┌──────────────────┐
-│ Postgres Sandbox  │ │  MySQL Sandbox    │ │  SQLite Sandbox  │
-│ (Disposable Cont.)│ │ (Disposable Cont.)│ │ (Ephemeral Copy) │
-└─────────┬─────────┘ └─────────┬─────────┘ └─────────┬────────┘
+ ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+ │ Postgres / MySQL│ │  Redis Sandbox  │ │  SQLite Sandbox │
+ │   (Disposable)  │ │   (RDB Verify)  │ │ (Ephemeral Copy)│
+ └────────┬────────┘ └────────┬────────┘ └────────┬────────┘
           │                   │                   │
           └───────────────────┼───────────────────┘
                               │ 4. Verification Report
                               ▼
   ┌────────────────────────────────────────────────────────┐
   │             Lazarus Control Plane (Web UI)             │
-  │  • 全時態備份健康監控 (Status Dashboard)             │
-  │  • Dead Man's Snitch 逾期未報偵測 (Silent Failure)     │
-  │  • 一鍵下載合規稽核證明 (SOC 2 / ISO 27001 Audit)       │
-  │  • Slack / Discord / Webhook 即時告警                  │
+  │  * Continuous Status Dashboard (Pass / Fail / Overdue) │
+  │  * Dead Man's Snitch (Silent Failure Detection)        │
+  │  * Compliance Audit Report Export (SOC 2 / ISO 27001)  │
+  │  * Real-Time Incident Alerts (Slack / Discord)         │
   └────────────────────────────────────────────────────────┘
 ```
 
@@ -52,7 +58,7 @@ Lazarus 就是定期幫你跑那一次還原。
 1. （選用）跑 `fetch_command` 把備份從遠端抓到本機（見下方「遠端備份來源」）
 2. 找到最新的備份檔（支援 glob，挑修改時間最新的——那才是你真的會拿來救命的那份）
 3. 檢查新鮮度（太舊的備份就算能還原也是失敗的備份）
-4. 對 PostgreSQL / MySQL：起一個**用完就丟**的 Docker 資料庫容器；對 SQLite：直接複製一份用完即丟的檔案（見下方「SQLite 不需要 Docker」）
+4. 對 PostgreSQL / MySQL / Redis：起一個**用完就丟**的 Docker 資料庫容器；對 SQLite：直接複製一份用完即丟的檔案（見下方「SQLite 不需要 Docker」）
 5. 真的把備份還原進去（GPG 加密的備份會先自動解密，見下方「GPG 加密備份」）
 6. 跑你定義的 SQL 斷言，確認資料真的在
 7. 拆掉容器（SQLite 則是刪掉暫存複本）
@@ -183,7 +189,7 @@ notify: format=slack when=on_failure webhook=not set
 ```yaml
 targets:
   - name: production-postgres
-    engine: postgres                # postgres、mysql 或 sqlite
+    engine: postgres                # postgres、mysql、sqlite 或 redis
     # fetch_command: aws s3 cp ...   # 備份不在本機時才需要（見下方說明）
     path: /backups/shop-*.sql.gz    # 支援 glob，取最新的
     max_age: 26h                    # 超過這個年齡就算失敗
@@ -255,6 +261,7 @@ fetch_timeout: 5m   # 預設 5 分鐘，避免抓取卡住讓 cron 無限等下�
 | PostgreSQL 自訂格式 | `pg_dump -Fc`，自動偵測（`PGDMP` 魔術位元組）並改用 `pg_restore` |
 | MySQL 純 SQL | `mysqldump` 的輸出 |
 | SQLite | 資料庫檔案本身的完整複本（不是 `.dump` 出來的 SQL 文字），沒有伺服器可以匯入，本來就是一個獨立檔案 |
+| Redis RDB | Redis 二進位快照檔（`.rdb`），自動偵測魔術位元組 `REDIS`，透過拋棄式容器加載並執行完整性校驗 |
 | gzip 壓縮 | 以上任一種加上 `.gz`，串流解壓縮，不佔額外磁碟空間 |
 | GPG 加密 | 以上任一種（含已經 gzip 壓縮過的）加上 `.gpg`/`.pgp`/`.asc`，自動偵測並解密 |
 
@@ -274,6 +281,26 @@ targets:
 ```
 
 `max_age`、`max_restore_duration`、`size_drift` 這些設定對 SQLite 目標一樣有效——只有 `image` 用不到（沒有容器）。
+
+### Redis 備份驗證
+
+Redis 備份是二進位的 RDB 檔案（如 `dump.rdb` 或 `dump.rdb.gz`）。Lazarus 會自動解壓並掛載至拋棄式 `redis:7-alpine` 沙盒容器，由 Redis 實例自動載入並執行 `redis-check-rdb` 完整性校驗。
+
+斷言檢查支援任何回傳單一整數的 Redis 命令（可使用 `command` 或 `sql` 欄位，例如 `DBSIZE`、`HLEN`、`SCARD`、`ZCARD`、`LLEN`）：
+
+```yaml
+targets:
+  - name: cache-redis
+    engine: redis
+    path: /backups/redis/dump-*.rdb
+    checks:
+      - name: keys exist in database
+        command: DBSIZE
+        expect_min: 1
+      - name: active sessions count
+        command: HLEN user_sessions
+        expect_min: 10
+```
 
 ### GPG 加密備份
 
@@ -297,7 +324,7 @@ LAZARUS_GPG_PASSPHRASE=your-passphrase lazarus --config lazarus.yml
 
 ```yaml
 notify:
-  format: slack        # slack | discord | generic
+  format: slack        # slack (Block Kit) | discord (Rich Embed) | generic | lazarus
   when: on_failure     # on_failure | always | never
 ```
 
@@ -307,13 +334,18 @@ Webhook URL 建議用環境變數給，不要寫進設定檔：
 LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx ./lazarus --config lazarus.yml
 ```
 
-失敗時的訊息長這樣：
+通知原生支援各平台的富文本排版：
+- **Slack (Block Kit)**：具備標題 Header、狀態區塊與 Markdown 錯誤碼塊。
+- **Discord (Rich Embeds)**：通過時顯示綠色邊框 (`#2ecc71`)，失敗時顯示紅色邊框 (`#e74c3c`)，並逐條列出每個目標的還原耗時與錯誤階段。
 
-```
-🔴 Lazarus: 1 of 2 backup(s) failed verification
-• empty-shell-backup failed at `checks`
-  check "users have rows" failed: got 0, want at least 1
-  backup: /backups/empty-shell.sql
+失敗時的告警卡片格式長這樣：
+
+```text
+🚨 Lazarus: Database Restoration Verification Failed
+Status Summary:
+FAIL  empty-shell-backup [checks] check "users have rows" failed: got 0, want at least 1
+      backup: /backups/empty-shell.sql (2.1 KB, 1h02m old)
+      restore took: 892ms
 ```
 
 **`when: always` 值得考慮**：如果 Lazarus 自己停止運作了（cron 壞掉、機器關機），「沒收到通知」看起來跟「備份都很健康」一模一樣。每次都發通知能把這種沉默變成訊號——這正是這個工具在別的地方幫你解決的問題，套在它自己身上。
@@ -405,23 +437,25 @@ docker compose run --rm --entrypoint sh \
 
 然後把 `docker-compose.yml` 裡註解掉的 `lazarus-gnupg` volume 取消註解（設定跟掛載都要），之後 `docker compose run --rm lazarus` 就會用這個持久化的金鑰圈解密。
 
-## 🎛️ Lazarus Control Plane 儀表板
+## 🎛️ Lazarus Control Plane (Web UI) 儀表板
 
-當備份驗證演練分散在多台主機、Kubernetes 叢集或多條 CI/CD 流水線時，**Lazarus Control Plane** 提供集中視覺化監控與災難復原合規治理。
+當備份驗證演練分散在多台主機、Kubernetes 叢集或多條 CI/CD 流水線時，**Lazarus Control Plane (Web UI)** 提供集中視覺化監控與災難復原合規治理。
 
 ```text
-  +-----------------------------------------------------------------------+
-  |  ⚡ Lazarus Control Plane — Disaster Recovery Verification Dashboard    |
-  +-----------------------------------------------------------------------+
-  |  Total: 3 Targets  |  Healthy: 2  |  Failing: 0  |  Overdue Alert: 1   |
-  +-----------------------------------------------------------------------+
-  |  Target               Status    Backup Size    Restored In   Last Drill|
-  |  production-postgres  PASS      14.4 KB        1m 42s        10m ago   |
-  |  analytics-mysql      PASS      2.1 KB         892ms         1h ago    |
-  |  auth-sqlite          OVERDUE   --             --            2d ago ⚠️ |
-  +-----------------------------------------------------------------------+
-  |  [ Export Compliance Report (SOC 2 / ISO 27001) ]                     |
-  +-----------------------------------------------------------------------+
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  Lazarus Control Plane (Web UI)             [ Compliance Certificate ]        │
+│  Continuous Disaster Recovery & Reliability Assurance                         │
+├───────────────────────────────────────────────────────────────────────────────┤
+│  Tracked: 4 Targets   │ Passing: 3    │ Failing: 0    │ Overdue: 1 (Alert)    │
+├───────────────────────────────────────────────────────────────────────────────┤
+│  TARGET               ENGINE     STATUS    SIZE      RESTORE TIME  LAST DRILL │
+│  production-postgres  postgres   PASS      14.4 KB   1m 42s        10m ago    │
+│  analytics-mysql      mysql      PASS      2.1 KB    892ms         1h ago     │
+│  cache-redis          redis      PASS      5.8 MB    340ms         3h ago     │
+│  auth-sqlite          sqlite     OVERDUE   --        --            2d ago (!) │
+├───────────────────────────────────────────────────────────────────────────────┤
+│  [ Export Compliance Audit Report (SOC 2 Type II / ISO 27001) ]               │
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 核心功能
@@ -555,7 +589,7 @@ go test ./... -race    # 單元測試，不需要 Docker
 go build ./...
 ```
 
-PostgreSQL / MySQL 的端對端測試需要 Docker，會實際起容器、產生真實的 dump 再還原——這個工具的核心價值就是「真的跑一次」，所以驗證方式也一樣。SQLite 不需要 Docker，`go test` 裡就有跑真正的 `sqlite3` CLI、真的資料庫檔案的端對端測試（本機沒裝 `sqlite3` 會自動跳過）。
+PostgreSQL / MySQL / Redis 的端對端測試需要 Docker，會實際起容器、產生真實的 dump 再還原——這個工具的核心價值就是「真的跑一次」，所以驗證方式也一樣。SQLite 不需要 Docker，`go test` 裡就有跑真正的 `sqlite3` CLI、真的資料庫檔案的端對端測試（本機沒裝 `sqlite3` 會自動跳過）。
 
 ### 發布
 

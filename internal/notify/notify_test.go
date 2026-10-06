@@ -179,12 +179,15 @@ func TestSendSlackFormat(t *testing.T) {
 		t.Fatalf("Send() error = %v", err)
 	}
 
-	var body map[string]string
+	var body map[string]any
 	if err := json.Unmarshal(received, &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if _, ok := body["text"]; !ok {
 		t.Errorf("payload = %s, want a \"text\" field for Slack", received)
+	}
+	if blocks, ok := body["blocks"].([]any); !ok || len(blocks) == 0 {
+		t.Errorf("payload = %s, want non-empty \"blocks\" for Slack", received)
 	}
 }
 
@@ -201,10 +204,13 @@ func TestSendDiscordFormat(t *testing.T) {
 		t.Fatalf("Send() error = %v", err)
 	}
 
-	var body map[string]string
-	json.Unmarshal(received, &body)
+	var body map[string]any
+	_ = json.Unmarshal(received, &body)
 	if _, ok := body["content"]; !ok {
 		t.Errorf("payload = %s, want a \"content\" field for Discord", received)
+	}
+	if embeds, ok := body["embeds"].([]any); !ok || len(embeds) == 0 {
+		t.Errorf("payload = %s, want non-empty \"embeds\" for Discord", received)
 	}
 }
 

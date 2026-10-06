@@ -115,11 +115,112 @@ func (n *Notifier) Send(ctx context.Context, results []verify.Result) error {
 func (n *Notifier) buildPayload(results []verify.Result) ([]byte, error) {
 	switch n.format {
 	case FormatDiscord:
-		return json.Marshal(map[string]string{"content": FormatMessage(results)})
+		return json.Marshal(buildDiscord(results))
 	case FormatGeneric, FormatLazarus:
 		return json.Marshal(buildGeneric(results))
 	default: // Slack, and anything Slack-compatible (Mattermost, etc.)
-		return json.Marshal(map[string]string{"text": FormatMessage(results)})
+		return json.Marshal(buildSlack(results))
+	}
+}
+
+type slackPayload struct {
+	Text   string       `json:"text"`
+	Blocks []slackBlock `json:"blocks,omitempty"`
+}
+
+type slackBlock struct {
+	Type   string         `json:"type"`
+	Text   *slackTextObj  `json:"text,omitempty"`
+	Fields []slackTextObj `json:"fields,omitempty"`
+}
+
+type slackTextObj struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+func buildSlack(results []verify.Result) slackPayload {
+	summaryText := FormatMessage(results)
+	failed := anyFailed(results)
+
+	headerText := "✅ Lazarus: All Database Restorations Passed"
+	if failed {
+		headerText = "🚨 Lazarus: Database Restoration Verification Failed"
+	}
+
+	blocks := []slackBlock{
+		{
+			Type: "header",
+			Text: &slackTextObj{Type: "plain_text", Text: headerText},
+		},
+		{
+			Type: "section",
+			Text: &slackTextObj{Type: "mrkdwn", Text: fmt.Sprintf("*Status Summary:*\n```\n%s\n```", truncate(summaryText))},
+		},
+	}
+
+	return slackPayload{
+		Text:   summaryText,
+		Blocks: blocks,
+	}
+}
+
+type discordPayload struct {
+	Content string         `json:"content"`
+	Embeds  []discordEmbed `json:"embeds,omitempty"`
+}
+
+type discordEmbed struct {
+	Title       string         `json:"title"`
+	Description string         `json:"description,omitempty"`
+	Color       int            `json:"color"`
+	Fields      []discordField `json:"fields,omitempty"`
+	Timestamp   string         `json:"timestamp,omitempty"`
+}
+
+type discordField struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Inline bool   `json:"inline,omitempty"`
+}
+
+func buildDiscord(results []verify.Result) discordPayload {
+	summaryText := FormatMessage(results)
+	failed := anyFailed(results)
+
+	color := 0x2ecc71 // green
+	title := "✅ Lazarus: Restoration Drills Passed"
+	if failed {
+		color = 0xe74c3c // red
+		title = "🚨 Lazarus: Restoration Drill Failed"
+	}
+
+	var fields []discordField
+	for _, r := range results {
+		status := "🟢 PASS"
+		val := fmt.Sprintf("Restored in %s", r.RestoreDuration.Truncate(time.Millisecond))
+		if !r.Passed {
+			status = "🔴 FAIL"
+			val = fmt.Sprintf("Failed at [%s]: %s", r.Stage, r.Err)
+		}
+		fields = append(fields, discordField{
+			Name:   fmt.Sprintf("%s %s", status, r.Target),
+			Value:  val,
+			Inline: false,
+		})
+	}
+
+	embed := discordEmbed{
+		Title:       title,
+		Description: truncate(summaryText),
+		Color:       color,
+		Fields:      fields,
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	}
+
+	return discordPayload{
+		Content: summaryText,
+		Embeds:  []discordEmbed{embed},
 	}
 }
 

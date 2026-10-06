@@ -19,6 +19,7 @@ const (
 	// complete, self-contained database file, so verifying it is just
 	// copying that file somewhere disposable and querying it directly.
 	EngineSQLite Engine = "sqlite"
+	EngineRedis  Engine = "redis"
 )
 
 type Config struct {
@@ -149,16 +150,18 @@ type SizeDrift struct {
 // the expectations should be set; a query returning a single numeric value is
 // compared against it.
 type Check struct {
-	Name  string `yaml:"name"`
-	SQL   string `yaml:"sql"`
-	Min   *int64 `yaml:"expect_min"`
-	Max   *int64 `yaml:"expect_max"`
-	Equal *int64 `yaml:"expect_equal"`
+	Name    string `yaml:"name"`
+	SQL     string `yaml:"sql"`
+	Command string `yaml:"command"`
+	Min     *int64 `yaml:"expect_min"`
+	Max     *int64 `yaml:"expect_max"`
+	Equal   *int64 `yaml:"expect_equal"`
 }
 
 const (
 	defaultPostgresImage = "postgres:16-alpine"
 	defaultMySQLImage    = "mysql:8"
+	defaultRedisImage    = "redis:7-alpine"
 )
 
 const defaultStateFile = "lazarus-state.json"
@@ -234,10 +237,14 @@ func (c *Config) applyDefaultsAndValidate() error {
 			}
 		case EngineSQLite:
 			// No sandbox container, so no image to default.
+		case EngineRedis:
+			if t.Image == "" {
+				t.Image = defaultRedisImage
+			}
 		case "":
-			return fmt.Errorf("target %q: engine is required (postgres, mysql or sqlite)", t.Name)
+			return fmt.Errorf("target %q: engine is required (postgres, mysql, sqlite or redis)", t.Name)
 		default:
-			return fmt.Errorf("target %q: unsupported engine %q (expected postgres, mysql or sqlite)", t.Name, t.Engine)
+			return fmt.Errorf("target %q: unsupported engine %q (expected postgres, mysql, sqlite or redis)", t.Name, t.Engine)
 		}
 
 		if t.SizeDrift != nil {
@@ -286,6 +293,9 @@ func (c *Config) applyNotifyDefaults() error {
 }
 
 func validateCheck(targetName string, index int, c *Check) error {
+	if c.SQL == "" && c.Command != "" {
+		c.SQL = c.Command
+	}
 	if c.SQL == "" {
 		return fmt.Errorf("target %q check %d: sql is required", targetName, index)
 	}

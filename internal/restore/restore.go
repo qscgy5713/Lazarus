@@ -141,6 +141,12 @@ func restoreCommand(engine config.Engine, file *backup.File) ([]string, error) {
 			sandbox.DBName(),
 		}, nil
 
+	case config.EngineRedis:
+		if file.Format == backup.FormatRedisRDB {
+			return []string{"redis-check-rdb", "/data/dump.rdb"}, nil
+		}
+		return []string{"redis-cli", "--pipe"}, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported engine %q", engine)
 	}

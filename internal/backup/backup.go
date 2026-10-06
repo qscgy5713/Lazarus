@@ -20,6 +20,7 @@ const (
 	// FormatPostgresCustom is pg_dump's custom/tar format, which needs
 	// pg_restore rather than psql.
 	FormatPostgresCustom Format = "postgres-custom"
+	FormatRedisRDB       Format = "redis-rdb"
 )
 
 // File is a located backup, ready to restore.
@@ -123,8 +124,14 @@ func hasEncryptedSuffix(name string) bool {
 // pgDumpCustomMagic is the marker pg_dump writes at the start of its
 // custom-format archives; psql can't read those, pg_restore has to.
 var pgDumpCustomMagic = []byte("PGDMP")
+var redisRDBMagic = []byte("REDIS")
 
 func detectFormat(path string, opaque bool) (Format, error) {
+	lower := strings.ToLower(path)
+	if strings.Contains(lower, ".rdb") {
+		return FormatRedisRDB, nil
+	}
+
 	// A gzipped or encrypted dump is almost always plain SQL underneath;
 	// pg_dump's custom format is already compressed internally, so people
 	// rarely gzip (let alone encrypt) it on top. Reading the magic bytes
@@ -150,6 +157,9 @@ func detectFormat(path string, opaque bool) (Format, error) {
 
 	if string(header[:n]) == string(pgDumpCustomMagic) {
 		return FormatPostgresCustom, nil
+	}
+	if n >= len(redisRDBMagic) && string(header[:len(redisRDBMagic)]) == string(redisRDBMagic) {
+		return FormatRedisRDB, nil
 	}
 	return FormatPlainSQL, nil
 }

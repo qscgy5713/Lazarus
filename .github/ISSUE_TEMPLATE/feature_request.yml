@@ -1,0 +1,22 @@
+name: Feature Request
+description: 建議新的資料庫支援、斷言檢查方式或 Control Plane 功能
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        你有希望 Lazarus 支援的備份驗證場景或新資料庫嗎？歡迎提出！
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 功能提案 (Feature Proposal)
+      placeholder: 請描述你希望新增的功能與使用場景...
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: 現有工作流程或替代方案 (Current Workaround)
+      placeholder: 你目前是如何解決這個問題的？
+    validations:
+      required: false
