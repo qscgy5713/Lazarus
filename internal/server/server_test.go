@@ -174,3 +174,16 @@ func TestOverdueCalculation(t *testing.T) {
 		t.Errorf("status = %s, want %s (overdue)", targets[0].Status, StatusOverdue)
 	}
 }
+
+func TestDemoMode(t *testing.T) {
+	s := New(Config{DemoMode: true})
+	targets := s.store.GetTargets()
+	if len(targets) == 0 {
+		t.Fatalf("expected seeded demo targets, got 0")
+	}
+
+	sum := s.store.GetSummary()
+	if sum.TotalTargets == 0 || sum.Healthy == 0 || sum.Failed == 0 || sum.Overdue == 0 {
+		t.Errorf("demo mode should seed healthy, failed, and overdue targets; got %+v", sum)
+	}
+}

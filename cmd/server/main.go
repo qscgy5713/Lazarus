@@ -17,6 +17,7 @@ func main() {
 	apiKey := flag.String("api-key", os.Getenv("SERVER_API_KEY"), "Optional API key for webhook authentication")
 	stateFile := flag.String("state", getEnvOrDefault("STATE_FILE", "lazarus-server.json"), "Path to persist target states")
 	overdueStr := flag.String("overdue", getEnvOrDefault("OVERDUE_THRESHOLD", "26h"), "Threshold after which a target is marked Overdue")
+	demoMode := flag.Bool("demo", os.Getenv("DEMO_MODE") == "true" || os.Getenv("DEMO_MODE") == "1", "Seed demo drill records on startup")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -39,6 +40,7 @@ func main() {
 		APIKey:           *apiKey,
 		StateFile:        *stateFile,
 		OverdueThreshold: overdueThreshold,
+		DemoMode:         *demoMode,
 	})
 
 	fmt.Println("==========================================================")
@@ -46,6 +48,9 @@ func main() {
 	fmt.Printf("   Web Dashboard : http://localhost%s\n", *addr)
 	fmt.Printf("   Report Webhook: http://localhost%s/api/v1/reports\n", *addr)
 	fmt.Printf("   State File    : %s\n", *stateFile)
+	if *demoMode {
+		fmt.Println("   Demo Mode     : Active (Preloaded sample drill records)")
+	}
 	if *apiKey != "" {
 		fmt.Println("   Authentication: Enabled (X-Lazarus-Key / Bearer Token)")
 	} else {

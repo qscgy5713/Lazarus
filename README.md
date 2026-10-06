@@ -446,6 +446,7 @@ go build -o lazarus-server ./cmd/server
 - `-api-key`: Webhook 驗證金鑰（可透過環境變數 `SERVER_API_KEY` 設定；支援 `X-API-Key`、`X-Lazarus-Key` 或 `Authorization: Bearer <token>`）
 - `-state`: 狀態持久化 JSON 檔案路徑（預設 `lazarus-server.json`）
 - `-overdue`: 逾期標記閥值時間（預設 `26h`）
+- `-demo`: 啟用示範模式（預載代表性演練資料，亦可透過環境變數 `DEMO_MODE=true` 設定）
 
 ### 將 Lazarus 演練回報至 Control Plane
 

@@ -12,6 +12,7 @@ type Config struct {
 	APIKey           string
 	StateFile        string
 	OverdueThreshold time.Duration
+	DemoMode         bool
 }
 
 type Server struct {
@@ -25,6 +26,9 @@ func New(cfg Config) *Server {
 		cfg.Addr = ":8080"
 	}
 	store := NewStore(cfg.StateFile, cfg.OverdueThreshold)
+	if cfg.DemoMode {
+		store.SeedDemoData()
+	}
 	s := &Server{
 		cfg:   cfg,
 		store: store,

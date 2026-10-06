@@ -185,3 +185,99 @@ func (s *Store) save() {
 	}
 	_ = os.WriteFile(s.filePath, data, 0644)
 }
+
+// SeedDemoData populates representative drill records (healthy, failed, and overdue) for demonstration.
+func (s *Store) SeedDemoData() {
+	now := time.Now().UTC()
+	demoReports := []InboundReport{
+		{
+			Passed:    true,
+			Total:     2,
+			Failed:    0,
+			Hostname:  "prod-backup-runner",
+			Timestamp: now.Add(-15 * time.Minute).Format(time.RFC3339),
+			Results: []InboundResult{
+				{
+					Target:            "production-postgres",
+					Passed:            true,
+					Stage:             "done",
+					BackupPath:        "/backups/postgres/shop-prod-latest.sql.gz",
+					BackupSize:        18432000,
+					BackupSizeHuman:   "17.6 MB",
+					BackupAge:         "2h15m",
+					DurationMs:        10240,
+					RestoreDurationMs: 7820,
+					Checks: []InboundCheck{
+						{Name: "users table is populated", Passed: true, Value: 1841},
+						{Name: "orders from last week made it in", Passed: true, Value: 327},
+					},
+				},
+				{
+					Target:            "analytics-mysql",
+					Passed:            true,
+					Stage:             "done",
+					BackupPath:        "/backups/mysql/events-latest.sql",
+					BackupSize:        45200000,
+					BackupSizeHuman:   "43.1 MB",
+					BackupAge:         "1h05m",
+					DurationMs:        15400,
+					RestoreDurationMs: 11300,
+					Checks: []InboundCheck{
+						{Name: "events table has records", Passed: true, Value: 98520},
+					},
+				},
+			},
+		},
+		{
+			Passed:    false,
+			Total:     1,
+			Failed:    1,
+			Hostname:  "staging-drill-worker",
+			Timestamp: now.Add(-45 * time.Minute).Format(time.RFC3339),
+			Results: []InboundResult{
+				{
+					Target:            "staging-sqlite",
+					Passed:            false,
+					Stage:             "checks",
+					Error:             "check \"tenants count\" failed: got 0, want at least 1",
+					BackupPath:        "/backups/sqlite/staging.db",
+					BackupSize:        1048576,
+					BackupSizeHuman:   "1.0 MB",
+					BackupAge:         "45m",
+					DurationMs:        320,
+					RestoreDurationMs: 45,
+					Checks: []InboundCheck{
+						{Name: "tenants count", Passed: false, Value: 0, Reason: "got 0, want at least 1"},
+					},
+				},
+			},
+		},
+		{
+			Passed:    true,
+			Total:     1,
+			Failed:    0,
+			Hostname:  "archive-runner-legacy",
+			Timestamp: now.Add(-72 * time.Hour).Format(time.RFC3339),
+			Results: []InboundResult{
+				{
+					Target:            "legacy-archive-db",
+					Passed:            true,
+					Stage:             "done",
+					BackupPath:        "/backups/postgres/archive-legacy.sql.gz",
+					BackupSize:        85000000,
+					BackupSizeHuman:   "81.0 MB",
+					BackupAge:         "72h",
+					DurationMs:        24000,
+					RestoreDurationMs: 19500,
+					Checks: []InboundCheck{
+						{Name: "cold storage records count", Passed: true, Value: 504100},
+					},
+				},
+			},
+		},
+	}
+
+	for _, rep := range demoReports {
+		s.RecordReport(rep)
+	}
+}
