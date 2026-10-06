@@ -187,7 +187,24 @@ func buildURL(cfg *config.S3Config) (string, string, error) {
 
 	// Default AWS S3 endpoint
 	region := cfg.Region
-	if region == "" || region == "us-east-1" {
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	// Buckets with dots in their name cannot use virtual-hosted style over HTTPS
+	// because wildcard TLS certificates (*.s3.amazonaws.com) only match a single
+	// domain level. Fall back to path-style for dotted buckets so TLS verification succeeds.
+	if strings.Contains(cfg.Bucket, ".") {
+		var host string
+		if region == "us-east-1" {
+			host = "s3.amazonaws.com"
+		} else {
+			host = fmt.Sprintf("s3.%s.amazonaws.com", region)
+		}
+		return fmt.Sprintf("https://%s/%s/%s", host, cfg.Bucket, key), host, nil
+	}
+
+	if region == "us-east-1" {
 		host := fmt.Sprintf("%s.s3.amazonaws.com", cfg.Bucket)
 		return fmt.Sprintf("https://%s/%s", host, key), host, nil
 	}

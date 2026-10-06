@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/csv"
 	"encoding/json"
@@ -29,8 +30,12 @@ type Server struct {
 	cfg         Config
 	store       *Store
 	mux         *http.ServeMux
+	httpSrv     *http.Server
+	httpSrvMu   sync.Mutex
 	alertMu     sync.Mutex
 	lastAlerted map[string]time.Time
+	alertStop   chan struct{}
+	alertDone   chan struct{}
 }
 
 func New(cfg Config) *Server {
@@ -52,10 +57,14 @@ func New(cfg Config) *Server {
 		store:       store,
 		mux:         http.NewServeMux(),
 		lastAlerted: make(map[string]time.Time),
+		alertStop:   make(chan struct{}),
+		alertDone:   make(chan struct{}),
 	}
 	s.routes()
 	if cfg.AlertWebhookURL != "" {
 		s.startAlertWorker()
+	} else {
+		close(s.alertDone)
 	}
 	return s
 }
@@ -65,12 +74,37 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) ListenAndServe() error {
-	srv := &http.Server{
+	s.httpSrvMu.Lock()
+	s.httpSrv = &http.Server{
 		Addr:              s.cfg.Addr,
 		Handler:           s.mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	return srv.ListenAndServe()
+	s.httpSrvMu.Unlock()
+	return s.httpSrv.ListenAndServe()
+}
+
+// Shutdown gracefully shuts down the HTTP server and stops background alert workers.
+func (s *Server) Shutdown(ctx context.Context) error {
+	select {
+	case <-s.alertStop:
+	default:
+		close(s.alertStop)
+	}
+
+	select {
+	case <-s.alertDone:
+	case <-ctx.Done():
+	}
+
+	s.httpSrvMu.Lock()
+	srv := s.httpSrv
+	s.httpSrvMu.Unlock()
+
+	if srv != nil {
+		return srv.Shutdown(ctx)
+	}
+	return nil
 }
 
 func (s *Server) routes() {
@@ -262,8 +296,15 @@ func sanitizeCSVField(val string) string {
 func (s *Server) startAlertWorker() {
 	ticker := time.NewTicker(s.cfg.AlertInterval)
 	go func() {
-		for range ticker.C {
-			s.CheckAndSendAlerts()
+		defer close(s.alertDone)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.alertStop:
+				return
+			case <-ticker.C:
+				s.CheckAndSendAlerts()
+			}
 		}
 	}()
 }

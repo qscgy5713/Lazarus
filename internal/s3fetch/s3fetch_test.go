@@ -115,3 +115,36 @@ func TestDownloader_WithProgress(t *testing.T) {
 		t.Errorf("expected progress output, got: %s", progressBuf.String())
 	}
 }
+
+func TestBuildURL_DottedBucket(t *testing.T) {
+	cfg := &config.S3Config{
+		Bucket: "my.company.backup",
+		Key:    "daily/db.sql",
+		Region: "us-east-1",
+	}
+	u, host, err := buildURL(cfg)
+	if err != nil {
+		t.Fatalf("buildURL error: %v", err)
+	}
+	expected := "https://s3.amazonaws.com/my.company.backup/daily/db.sql"
+	if u != expected {
+		t.Errorf("url = %q, want %q", u, expected)
+	}
+	if host != "s3.amazonaws.com" {
+		t.Errorf("host = %q, want s3.amazonaws.com", host)
+	}
+
+	// Non us-east-1 region
+	cfg.Region = "eu-west-1"
+	u, host, err = buildURL(cfg)
+	if err != nil {
+		t.Fatalf("buildURL error: %v", err)
+	}
+	expected = "https://s3.eu-west-1.amazonaws.com/my.company.backup/daily/db.sql"
+	if u != expected {
+		t.Errorf("url = %q, want %q", u, expected)
+	}
+	if host != "s3.eu-west-1.amazonaws.com" {
+		t.Errorf("host = %q, want s3.eu-west-1.amazonaws.com", host)
+	}
+}

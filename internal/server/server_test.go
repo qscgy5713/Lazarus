@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -415,5 +416,41 @@ func TestCheckAndSendAlertsDiscordFormat(t *testing.T) {
 
 	if receivedBody["content"] == "" {
 		t.Fatalf("expected 'content' field in discord alert payload, got: %+v", receivedBody)
+	}
+}
+
+func TestServerShutdown(t *testing.T) {
+	s := New(Config{
+		Addr:            "127.0.0.1:0",
+		AlertWebhookURL: "http://127.0.0.1:9999/dummy",
+		AlertInterval:   50 * time.Millisecond,
+	})
+
+	serverErr := make(chan error, 1)
+	go func() {
+		err := s.ListenAndServe()
+		if err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+		close(serverErr)
+	}()
+
+	// Wait briefly for server to bind
+	time.Sleep(50 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown failed: %v", err)
+	}
+
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			t.Fatalf("ListenAndServe returned unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ListenAndServe to stop")
 	}
 }

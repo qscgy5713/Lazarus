@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"lazarus/internal/server"
@@ -69,8 +73,30 @@ func main() {
 	}
 	fmt.Println("==========================================================")
 
-	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("server failed: %v", err)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+		close(serverErr)
+	}()
+
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			log.Fatalf("server failed: %v", err)
+		}
+	case <-ctx.Done():
+		fmt.Println("\nReceived shutdown signal, shutting down Lazarus Control Plane gracefully...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown error: %v", err)
+		}
+		fmt.Println("Server stopped.")
 	}
 }
 
