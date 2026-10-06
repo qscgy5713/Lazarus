@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -119,7 +120,7 @@ func (n *Notifier) buildPayload(results []verify.Result) ([]byte, error) {
 	case FormatDiscord:
 		return json.Marshal(buildDiscord(results))
 	case FormatTelegram:
-		return json.Marshal(buildTelegram(results))
+		return json.Marshal(n.buildTelegram(results))
 	case FormatTeams:
 		return json.Marshal(buildTeams(results))
 	case FormatGeneric, FormatLazarus:
@@ -303,11 +304,12 @@ func buildGeneric(results []verify.Result) genericPayload {
 }
 
 type telegramPayload struct {
+	ChatID    string `json:"chat_id,omitempty"`
 	Text      string `json:"text"`
 	ParseMode string `json:"parse_mode"`
 }
 
-func buildTelegram(results []verify.Result) telegramPayload {
+func (n *Notifier) buildTelegram(results []verify.Result) telegramPayload {
 	failed := anyFailed(results)
 	header := "<b>✅ Lazarus: All Restorations Passed</b>"
 	if failed {
@@ -316,7 +318,14 @@ func buildTelegram(results []verify.Result) telegramPayload {
 	summaryText := FormatMessage(results)
 	escapedSummary := htmlEscape(summaryText)
 	text := fmt.Sprintf("%s\n\n<pre>%s</pre>", header, truncate(escapedSummary))
+
+	var chatID string
+	if u, err := url.Parse(n.url); err == nil {
+		chatID = u.Query().Get("chat_id")
+	}
+
 	return telegramPayload{
+		ChatID:    chatID,
 		Text:      text,
 		ParseMode: "HTML",
 	}

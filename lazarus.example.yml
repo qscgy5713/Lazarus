@@ -59,6 +59,10 @@ targets:
     # README. Nothing to set here for that; it's detected from the name.
     path: /backups/postgres/shop-*.sql.gz
 
+    # Automatically delete the local backup file at path after verification
+    # finishes to reclaim disk space (ideal for remote/S3 pulled backups).
+    # cleanup_backup: true
+
     # Fail if the newest backup is older than this. A backup that restores
     # perfectly but is three weeks old is still a failed backup.
     max_age: 26h

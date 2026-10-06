@@ -1,12 +1,15 @@
 package server
 
 import (
+	"bytes"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,28 +19,43 @@ type Config struct {
 	StateFile        string
 	OverdueThreshold time.Duration
 	DemoMode         bool
+	AlertWebhookURL  string
+	AlertFormat      string
+	AlertInterval    time.Duration
 }
 
 type Server struct {
-	cfg   Config
-	store *Store
-	mux   *http.ServeMux
+	cfg         Config
+	store       *Store
+	mux         *http.ServeMux
+	alertMu     sync.Mutex
+	lastAlerted map[string]time.Time
 }
 
 func New(cfg Config) *Server {
 	if cfg.Addr == "" {
 		cfg.Addr = ":8080"
 	}
+	if cfg.AlertInterval <= 0 {
+		cfg.AlertInterval = 10 * time.Minute
+	}
+	if cfg.AlertFormat == "" {
+		cfg.AlertFormat = "slack"
+	}
 	store := NewStore(cfg.StateFile, cfg.OverdueThreshold)
 	if cfg.DemoMode {
 		store.SeedDemoData()
 	}
 	s := &Server{
-		cfg:   cfg,
-		store: store,
-		mux:   http.NewServeMux(),
+		cfg:         cfg,
+		store:       store,
+		mux:         http.NewServeMux(),
+		lastAlerted: make(map[string]time.Time),
 	}
 	s.routes()
+	if cfg.AlertWebhookURL != "" {
+		s.startAlertWorker()
+	}
 	return s
 }
 
@@ -208,5 +226,60 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 			strconv.Itoa(h.ChecksFailed),
 			h.Error,
 		})
+	}
+}
+
+func (s *Server) startAlertWorker() {
+	ticker := time.NewTicker(s.cfg.AlertInterval)
+	go func() {
+		for range ticker.C {
+			s.CheckAndSendAlerts()
+		}
+	}()
+}
+
+// CheckAndSendAlerts scans tracked targets and dispatches webhook notifications for overdue targets.
+func (s *Server) CheckAndSendAlerts() {
+	if s.cfg.AlertWebhookURL == "" {
+		return
+	}
+
+	targets := s.store.GetTargets()
+	now := time.Now().UTC()
+
+	for _, t := range targets {
+		if t.Status != StatusOverdue || t.Muted {
+			continue
+		}
+
+		s.alertMu.Lock()
+		last, alerted := s.lastAlerted[t.Name]
+		if alerted && now.Sub(last) < 4*time.Hour {
+			s.alertMu.Unlock()
+			continue
+		}
+		s.lastAlerted[t.Name] = now
+		s.alertMu.Unlock()
+
+		msg := fmt.Sprintf("⚠️ [Lazarus Dead Man's Snitch] Target %q is OVERDUE! Last successful drill was at %s.",
+			t.Name, t.LastDrilledAt.Format(time.RFC3339))
+
+		payload := map[string]string{"text": msg}
+		body, _ := json.Marshal(payload)
+
+		req, err := http.NewRequest(http.MethodPost, s.cfg.AlertWebhookURL, bytes.NewReader(body))
+		if err != nil {
+			log.Printf("lazarus-server: failed to create alert request: %v", err)
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("lazarus-server: alert delivery failed for target %q: %v", t.Name, err)
+			continue
+		}
+		_ = resp.Body.Close()
 	}
 }

@@ -140,6 +140,10 @@ type Target struct {
 	// (AWS S3, Cloudflare R2, MinIO, etc.) to Path before verification.
 	S3 *S3Config `yaml:"s3"`
 
+	// CleanupBackup, when true, removes the file at Path after verification
+	// finishes to reclaim disk space (useful for pulled remote/S3 backups).
+	CleanupBackup bool `yaml:"cleanup_backup"`
+
 	Checks []Check `yaml:"checks"`
 }
 

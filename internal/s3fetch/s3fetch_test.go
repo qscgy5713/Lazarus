@@ -1,7 +1,9 @@
 package s3fetch
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -80,5 +82,36 @@ func TestDownloader_Errors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "404") {
 		t.Fatalf("expected 404 in error, got %v", err)
+	}
+}
+
+func TestDownloader_WithProgress(t *testing.T) {
+	content := "large backup dummy content for progress tracking"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, content)
+	}))
+	defer server.Close()
+
+	destDir := t.TempDir()
+	destPath := filepath.Join(destDir, "downloaded.sql")
+
+	var progressBuf bytes.Buffer
+	d := New().WithProgressWriter(&progressBuf)
+
+	cfg := &config.S3Config{
+		Bucket:   "test-bucket",
+		Key:      "db.sql",
+		Endpoint: server.URL,
+	}
+
+	err := d.Download(context.Background(), cfg, destPath)
+	if err != nil {
+		t.Fatalf("download failed: %v", err)
+	}
+
+	if !strings.Contains(progressBuf.String(), "[s3] downloading...") {
+		t.Errorf("expected progress output, got: %s", progressBuf.String())
 	}
 }

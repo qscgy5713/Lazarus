@@ -273,6 +273,25 @@ fetch_timeout: 5m   # 預設 5 分鐘，避免抓取卡住讓 cron 無限等下�
 
 抓取需要的認證（AWS 憑證、SSH key 等）要讓執行 Lazarus 的那個行程本身拿得到——注意 cron 通常不會載入你 shell 的環境變數，需要另外設定。
 
+#### 自動清理暫存備份檔（`cleanup_backup`）
+
+當透過遠端指令或 S3 拉取備份到本機時，驗證結束後若不希望備份檔佔用磁碟空間，可開啟 `cleanup_backup: true`，Lazarus 會在該目標演練完成後自動刪除本機備份檔：
+
+```yaml
+targets:
+  - name: production-postgres
+    engine: postgres
+    path: /tmp/shop-latest.sql.gz
+    s3:
+      bucket: my-backups
+      key: postgres/shop-latest.sql.gz
+    cleanup_backup: true   # 演練完畢自動刪除本機 /tmp/shop-latest.sql.gz
+```
+
+#### S3 下載即時進度與速率
+
+當透過 `s3:` 拉取大體積備份時，終端機將即時顯示傳輸進度、百分比與下載速率（例如 `[s3] downloading... 45.2/120.0 MB (37%) at 15.4 MB/s`），避免長時間等待時產生無回應疑慮。
+
 不設定 `fetch_command` 或 `s3` 的目標行為完全不變，`path` 直接當本機路徑查找。
 
 ## 支援的備份格式
@@ -509,6 +528,8 @@ go build -o lazarus-server ./cmd/server
 - `-state`: 狀態持久化 JSON 檔案路徑（預設 `lazarus-server.json`）
 - `-overdue`: 逾期標記閥值時間（預設 `26h`）
 - `-demo`: 啟用示範模式（預載代表性演練資料，亦可透過環境變數 `DEMO_MODE=true` 設定）
+- `-alert-webhook`: Dead Man's Snitch 主動推播 Webhook URL（亦可透過環境變數 `ALERT_WEBHOOK_URL` 注入；當目標逾期且未靜音時主動發送 Slack / Discord / Teams 通知）
+- `-alert-interval`: 逾期檢查間隔（預設 `10m`，亦可透過環境變數 `ALERT_INTERVAL` 設定）
 
 ### 將 Lazarus 演練回報至 Control Plane
 

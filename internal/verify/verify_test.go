@@ -622,3 +622,26 @@ func TestRun_S3Download(t *testing.T) {
 		t.Fatalf("expected target to pass, got err: %v", res.Err)
 	}
 }
+
+func TestCleanupBackup(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+	sourceDB := sqliteBackup(t, dir, "to_clean.db", 3)
+
+	target := config.Target{
+		Name:          "cleanup-test",
+		Engine:        config.EngineSQLite,
+		Path:          sourceDB,
+		CleanupBackup: true,
+	}
+
+	res := Run(context.Background(), target, 0, false, false, "")
+	if !res.Passed {
+		t.Fatalf("run failed: %v", res.Err)
+	}
+
+	// Verify file was removed
+	if _, err := os.Stat(sourceDB); !os.IsNotExist(err) {
+		t.Fatalf("expected backup file %s to be deleted, stat err: %v", sourceDB, err)
+	}
+}

@@ -6,6 +6,7 @@ package verify
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -77,6 +78,16 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 	defer func() {
 		result.Duration = time.Since(started)
 	}()
+
+	if target.CleanupBackup {
+		defer func() {
+			if result.Backup != nil && result.Backup.Path != "" {
+				_ = os.Remove(result.Backup.Path)
+			} else if target.Path != "" {
+				_ = os.Remove(target.Path)
+			}
+		}()
+	}
 
 	if target.FetchCommand != "" {
 		if err := fetch.Run(ctx, target.FetchCommand, target.FetchTimeout); err != nil {

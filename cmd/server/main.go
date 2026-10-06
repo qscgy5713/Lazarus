@@ -18,6 +18,9 @@ func main() {
 	stateFile := flag.String("state", getEnvOrDefault("STATE_FILE", "lazarus-server.json"), "Path to persist target states")
 	overdueStr := flag.String("overdue", getEnvOrDefault("OVERDUE_THRESHOLD", "26h"), "Threshold after which a target is marked Overdue")
 	demoMode := flag.Bool("demo", os.Getenv("DEMO_MODE") == "true" || os.Getenv("DEMO_MODE") == "1", "Seed demo drill records on startup")
+	alertWebhook := flag.String("alert-webhook", os.Getenv("ALERT_WEBHOOK_URL"), "Webhook URL for Dead Man's Snitch overdue alerts")
+	alertFormat := flag.String("alert-format", getEnvOrDefault("ALERT_FORMAT", "slack"), "Alert format: slack, discord, teams")
+	alertIntervalStr := flag.String("alert-interval", getEnvOrDefault("ALERT_INTERVAL", "10m"), "Interval for checking overdue alerts")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -35,12 +38,20 @@ func main() {
 		log.Fatalf("invalid overdue duration %q: %v", *overdueStr, err)
 	}
 
+	alertInterval, err := time.ParseDuration(*alertIntervalStr)
+	if err != nil {
+		log.Fatalf("invalid alert interval %q: %v", *alertIntervalStr, err)
+	}
+
 	srv := server.New(server.Config{
 		Addr:             *addr,
 		APIKey:           *apiKey,
 		StateFile:        *stateFile,
 		OverdueThreshold: overdueThreshold,
 		DemoMode:         *demoMode,
+		AlertWebhookURL:  *alertWebhook,
+		AlertFormat:      *alertFormat,
+		AlertInterval:    alertInterval,
 	})
 
 	fmt.Println("==========================================================")

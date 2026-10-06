@@ -295,3 +295,50 @@ func TestExportCSV(t *testing.T) {
 		t.Errorf("header = %s, missing required columns", lines[0])
 	}
 }
+
+func TestCheckAndSendAlerts(t *testing.T) {
+	alertCount := 0
+	serverWebhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		alertCount++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer serverWebhook.Close()
+
+	s := New(Config{
+		OverdueThreshold: 100 * time.Millisecond,
+		AlertWebhookURL:  serverWebhook.URL,
+	})
+
+	// Add an overdue target
+	pastTime := time.Now().UTC().Add(-500 * time.Millisecond).Format(time.RFC3339)
+	s.store.RecordReport(InboundReport{
+		Timestamp: pastTime,
+		Results: []InboundResult{
+			{Target: "db-overdue-alert", Passed: true, Stage: "done"},
+		},
+	})
+
+	// Run alert check
+	s.CheckAndSendAlerts()
+
+	if alertCount != 1 {
+		t.Fatalf("expected 1 alert sent, got %d", alertCount)
+	}
+
+	// Immediate second check should not re-alert (throttling)
+	s.CheckAndSendAlerts()
+	if alertCount != 1 {
+		t.Fatalf("expected throttled alert, count stayed at 1, got %d", alertCount)
+	}
+
+	// If muted, should not alert
+	_ = s.store.SetTargetMuted("db-overdue-alert", true)
+	s.alertMu.Lock()
+	delete(s.lastAlerted, "db-overdue-alert")
+	s.alertMu.Unlock()
+
+	s.CheckAndSendAlerts()
+	if alertCount != 1 {
+		t.Fatalf("muted target should not send alert, got %d", alertCount)
+	}
+}
