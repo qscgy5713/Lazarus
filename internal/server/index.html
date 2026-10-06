@@ -198,6 +198,16 @@
   <script>
     let globalTargets = [];
 
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     async function fetchData() {
       const icon = document.getElementById('refreshIcon');
       if (icon) icon.classList.add('animate-spin');
@@ -240,6 +250,7 @@
     }
 
     async function toggleMute(name, mute) {
+      if (!name) return;
       const endpoint = mute ? `/api/v1/targets/${encodeURIComponent(name)}/mute` : `/api/v1/targets/${encodeURIComponent(name)}/unmute`;
       try {
         await fetch(endpoint, { method: 'POST' });
@@ -275,21 +286,25 @@
           statusIcon = '🔕';
         }
 
+        const safeName = escapeHtml(t.name);
         const muteBtn = t.muted
-          ? `<button onclick="toggleMute('${t.name}', false)" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">🔔 Unmute</button>`
-          : `<button onclick="toggleMute('${t.name}', true)" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 border border-slate-700 transition">🔕 Mute</button>`;
+          ? `<button onclick="toggleMute(this.getAttribute('data-target'), false)" data-target="${safeName}" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">🔔 Unmute</button>`
+          : `<button onclick="toggleMute(this.getAttribute('data-target'), true)" data-target="${safeName}" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 border border-slate-700 transition">🔕 Mute</button>`;
 
         const checksHtml = (t.last_checks || []).map(ch => {
-          const detail = ch.passed ? '✓ OK (= ' + ch.value + ')' : '✗ ' + (ch.reason || 'FAILED');
+          const detail = ch.passed ? '✓ OK (= ' + escapeHtml(ch.value) + ')' : '✗ ' + escapeHtml(ch.reason || 'FAILED');
           const color = ch.passed ? 'text-emerald-400' : 'text-rose-400';
-          return '<div class="flex items-center justify-between py-1 border-b border-slate-800/40 text-[11px]"><span class="text-slate-300">' + ch.name + '</span><span class="font-mono ' + color + '">' + detail + '</span></div>';
+          return '<div class="flex items-center justify-between py-1 border-b border-slate-800/40 text-[11px]"><span class="text-slate-300">' + escapeHtml(ch.name) + '</span><span class="font-mono ' + color + '">' + detail + '</span></div>';
         }).join('');
+
+        const safeBackupPath = escapeHtml(t.last_backup_path || '');
+        const backupSourceDisplay = t.last_backup_path ? safeBackupPath : 'Direct stream';
 
         return '<div class="bg-slate-900/80 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4 hover:border-slate-700 transition">' +
           '<div class="flex items-center justify-between">' +
             '<div>' +
               '<div class="flex items-center space-x-2">' +
-                '<h3 class="text-base font-bold text-white tracking-tight">' + t.name + '</h3>' +
+                '<h3 class="text-base font-bold text-white tracking-tight">' + safeName + '</h3>' +
                 muteBtn +
               '</div>' +
               '<span class="text-xs text-slate-400 font-mono">Last drill: ' + formatAgo(t.last_drilled_at) + '</span>' +
@@ -306,14 +321,14 @@
             '</div>' +
             '<div>' +
               '<span class="text-slate-500 block text-[10px] uppercase font-semibold">Backup Size</span>' +
-              '<span class="font-mono text-slate-200">' + (t.last_backup_size || 'N/A') + '</span>' +
+              '<span class="font-mono text-slate-200">' + (t.last_backup_size ? escapeHtml(t.last_backup_size) : 'N/A') + '</span>' +
             '</div>' +
             '<div class="col-span-2 truncate">' +
               '<span class="text-slate-500 block text-[10px] uppercase font-semibold">Backup Source</span>' +
-              '<span class="font-mono text-slate-300 text-[11px] truncate block" title="' + (t.last_backup_path || '') + '">' + (t.last_backup_path || 'Direct stream') + '</span>' +
+              '<span class="font-mono text-slate-300 text-[11px] truncate block" title="' + safeBackupPath + '">' + backupSourceDisplay + '</span>' +
             '</div>' +
           '</div>' +
-          (t.last_error ? '<div class="p-2.5 bg-rose-950/40 border border-rose-900/50 rounded text-rose-300 text-xs font-mono">' + t.last_error + '</div>' : '') +
+          (t.last_error ? '<div class="p-2.5 bg-rose-950/40 border border-rose-900/50 rounded text-rose-300 text-xs font-mono">' + escapeHtml(t.last_error) + '</div>' : '') +
           (t.last_checks && t.last_checks.length > 0 ? (
             '<div class="space-y-1">' +
               '<span class="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Assertions (' + t.last_checks.filter(x => x.passed).length + '/' + t.last_checks.length + ')</span>' +
@@ -334,10 +349,11 @@
       tbody.innerHTML = reports.slice(0, 15).map(r => {
         const color = r.passed ? 'text-emerald-400' : 'text-rose-400';
         const statusText = r.passed ? '✓ PASS (' + r.total + ' targets)' : '✗ FAIL (' + r.failed + ' broken)';
+        const targetList = r.results ? r.results.map(x => escapeHtml(x.target)).join(', ') : 'N/A';
         return '<tr class="hover:bg-slate-800/30 transition">' +
           '<td class="py-3 px-4 font-mono text-slate-400">' + formatAgo(r.timestamp) + '</td>' +
-          '<td class="py-3 px-4 text-slate-300 font-mono">' + (r.hostname || 'cli') + '</td>' +
-          '<td class="py-3 px-4 font-medium text-white">' + (r.results ? r.results.map(x => x.target).join(', ') : 'N/A') + '</td>' +
+          '<td class="py-3 px-4 text-slate-300 font-mono">' + escapeHtml(r.hostname || 'cli') + '</td>' +
+          '<td class="py-3 px-4 font-medium text-white">' + targetList + '</td>' +
           '<td class="py-3 px-4 font-semibold ' + color + '">' + statusText + '</td>' +
           '<td class="py-3 px-4 text-right font-mono text-slate-400">' + (r.results ? r.results.length : 0) + ' items</td>' +
         '</tr>';
@@ -353,9 +369,10 @@
         list.innerHTML = globalTargets.map(t => {
           const statusClass = t.status === 'healthy' ? 'bg-emerald-950 text-emerald-400' : 'bg-rose-950 text-rose-400';
           const label = t.status === 'healthy' ? 'VERIFIED' : 'UNVERIFIED';
+          const safeName = escapeHtml(t.name);
           return '<div class="flex items-center justify-between p-3 bg-slate-950/80 rounded border border-slate-800 text-xs">' +
             '<div>' +
-              '<span class="font-bold text-white block">' + t.name + '</span>' +
+              '<span class="font-bold text-white block">' + safeName + '</span>' +
               '<span class="text-slate-400 text-[11px] font-mono">Last Drilled: ' + (t.last_drilled_at ? new Date(t.last_drilled_at).toLocaleString() : 'N/A') + ' (Took: ' + (t.last_restore_ms / 1000).toFixed(2) + 's)</span>' +
             '</div>' +
             '<span class="px-2 py-0.5 rounded text-xs font-semibold ' + statusClass + '">' + label + '</span>' +

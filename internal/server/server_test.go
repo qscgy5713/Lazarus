@@ -342,3 +342,78 @@ func TestCheckAndSendAlerts(t *testing.T) {
 		t.Fatalf("muted target should not send alert, got %d", alertCount)
 	}
 }
+
+func TestMuteNonExistentTargetReturns404(t *testing.T) {
+	s := New(Config{})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/targets/non-existent-db/mute", nil)
+	rec := httptest.NewRecorder()
+
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found for non-existent target, got %d", rec.Code)
+	}
+}
+
+func TestExportCSVFormulaInjectionSanitization(t *testing.T) {
+	s := New(Config{})
+	s.store.RecordReport(InboundReport{
+		Passed: true,
+		Results: []InboundResult{
+			{
+				Target:     "=cmd|' /C calc'!A0",
+				Passed:     true,
+				Stage:      "+evil_stage",
+				BackupPath: "@http://malicious.site",
+				Error:      "-dangerous_error",
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/export/csv", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "'=cmd|' /C calc'!A0") {
+		t.Errorf("expected target to be sanitized with leading single quote; got:\n%s", body)
+	}
+	if !strings.Contains(body, "'+evil_stage") {
+		t.Errorf("expected stage to be sanitized with leading single quote; got:\n%s", body)
+	}
+	if !strings.Contains(body, "'@http://malicious.site") {
+		t.Errorf("expected backup path to be sanitized with leading single quote; got:\n%s", body)
+	}
+	if !strings.Contains(body, "'-dangerous_error") {
+		t.Errorf("expected error to be sanitized with leading single quote; got:\n%s", body)
+	}
+}
+
+func TestCheckAndSendAlertsDiscordFormat(t *testing.T) {
+	var receivedBody map[string]string
+	serverWebhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&receivedBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer serverWebhook.Close()
+
+	s := New(Config{
+		OverdueThreshold: 100 * time.Millisecond,
+		AlertWebhookURL:  serverWebhook.URL,
+		AlertFormat:      "discord",
+	})
+
+	pastTime := time.Now().UTC().Add(-500 * time.Millisecond).Format(time.RFC3339)
+	s.store.RecordReport(InboundReport{
+		Timestamp: pastTime,
+		Results: []InboundResult{
+			{Target: "discord-alert-db", Passed: true, Stage: "done"},
+		},
+	})
+
+	s.CheckAndSendAlerts()
+
+	if receivedBody["content"] == "" {
+		t.Fatalf("expected 'content' field in discord alert payload, got: %+v", receivedBody)
+	}
+}

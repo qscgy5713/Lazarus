@@ -34,7 +34,9 @@ type Downloader struct {
 func New() *Downloader {
 	return &Downloader{
 		client: &http.Client{
-			Timeout: 30 * time.Minute,
+			// Do not set fixed http.Client.Timeout: for multi-gigabyte backup downloads,
+			// a client timeout aborts long-running transfers. Cancellation is governed
+			// by the passed-in context.Context instead.
 		},
 	}
 }
@@ -92,15 +94,18 @@ func (d *Downloader) Download(ctx context.Context, cfg *config.S3Config, destPat
 		return fmt.Errorf("s3 download failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+	destDir := filepath.Dir(destPath)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("create dest dir: %w", err)
 	}
 
-	out, err := os.Create(destPath)
+	// Download to a temporary file in the same directory first, then atomically rename
+	tmpFile, err := os.CreateTemp(destDir, ".lazarus-s3-*.tmp")
 	if err != nil {
-		return fmt.Errorf("create dest file: %w", err)
+		return fmt.Errorf("create temp download file: %w", err)
 	}
-	defer out.Close()
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
 
 	reader := io.Reader(resp.Body)
 	if d.ProgressWriter != nil && resp.ContentLength > 0 {
@@ -112,12 +117,21 @@ func (d *Downloader) Download(ctx context.Context, cfg *config.S3Config, destPat
 		}
 	}
 
-	if _, err := io.Copy(out, reader); err != nil {
+	if _, err := io.Copy(tmpFile, reader); err != nil {
+		_ = tmpFile.Close()
 		return fmt.Errorf("write backup file: %w", err)
 	}
 
 	if d.ProgressWriter != nil && resp.ContentLength > 0 {
 		fmt.Fprintf(d.ProgressWriter, "\n")
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close temp backup file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		return fmt.Errorf("finalize backup file: %w", err)
 	}
 
 	return nil
@@ -202,10 +216,11 @@ func signRequest(req *http.Request, cfg *config.S3Config, host, region, dateStam
 			host, emptyPayloadHash, amzDate)
 	}
 
-	canonicalURI := req.URL.EscapedPath()
-	if canonicalURI == "" {
-		canonicalURI = "/"
+	path := req.URL.Path
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
 	}
+	canonicalURI := uriEncode(path, false)
 
 	canonicalRequest := strings.Join([]string{
 		http.MethodGet,
@@ -251,4 +266,20 @@ func getSignatureKey(secret, dateStamp, regionName, serviceName string) []byte {
 	kService := hmacSHA256(kRegion, []byte(serviceName))
 	kSigning := hmacSHA256(kService, []byte("aws4_request"))
 	return kSigning
+}
+
+// uriEncode implements RFC 3986 URI encoding for AWS SigV4 canonical URI.
+func uriEncode(input string, encodeSlash bool) string {
+	var result strings.Builder
+	for i := 0; i < len(input); i++ {
+		b := input[i]
+		if (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' || b == '-' || b == '~' || b == '.' {
+			result.WriteByte(b)
+		} else if b == '/' && !encodeSlash {
+			result.WriteByte('/')
+		} else {
+			result.WriteString(fmt.Sprintf("%%%02X", b))
+		}
+	}
+	return result.String()
 }

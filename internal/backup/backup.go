@@ -143,9 +143,26 @@ func hasEncryptedSuffix(name string) bool {
 var pgDumpCustomMagic = []byte("PGDMP")
 var redisRDBMagic = []byte("REDIS")
 
+func stripEnvelopeExtensions(path string) string {
+	base := filepath.Base(path)
+	for {
+		rawExt := filepath.Ext(base)
+		if rawExt == "" {
+			break
+		}
+		ext := strings.ToLower(rawExt)
+		if ext == ".gpg" || ext == ".pgp" || ext == ".asc" || ext == ".gz" || ext == ".zst" || ext == ".zstd" {
+			base = base[:len(base)-len(rawExt)]
+		} else {
+			break
+		}
+	}
+	return base
+}
+
 func detectFormat(path string, opaque bool) (Format, error) {
-	lower := strings.ToLower(path)
-	if strings.Contains(lower, ".rdb") {
+	stripped := stripEnvelopeExtensions(path)
+	if strings.ToLower(filepath.Ext(stripped)) == ".rdb" {
 		return FormatRedisRDB, nil
 	}
 

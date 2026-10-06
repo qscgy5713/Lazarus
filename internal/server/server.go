@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -64,7 +65,12 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) ListenAndServe() error {
-	return http.ListenAndServe(s.cfg.Addr, s.mux)
+	srv := &http.Server{
+		Addr:              s.cfg.Addr,
+		Handler:           s.mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	return srv.ListenAndServe()
 }
 
 func (s *Server) routes() {
@@ -84,12 +90,21 @@ func (s *Server) checkAuth(r *http.Request) bool {
 	if s.cfg.APIKey == "" {
 		return true
 	}
+	expected := []byte(s.cfg.APIKey)
+
 	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") && strings.TrimPrefix(auth, "Bearer ") == s.cfg.APIKey {
-		return true
+	if strings.HasPrefix(auth, "Bearer ") {
+		token := []byte(strings.TrimPrefix(auth, "Bearer "))
+		if subtle.ConstantTimeCompare(token, expected) == 1 {
+			return true
+		}
 	}
-	if r.Header.Get("X-Lazarus-Key") == s.cfg.APIKey || r.Header.Get("X-API-Key") == s.cfg.APIKey {
-		return true
+	for _, header := range []string{"X-Lazarus-Key", "X-API-Key"} {
+		if val := r.Header.Get(header); val != "" {
+			if subtle.ConstantTimeCompare([]byte(val), expected) == 1 {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -116,6 +131,7 @@ func (s *Server) handlePostReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024)
 	var rep InboundReport
 	if err := json.NewDecoder(r.Body).Decode(&rep); err != nil {
 		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
@@ -157,7 +173,10 @@ func (s *Server) handleMuteTarget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"target name required"}`, http.StatusBadRequest)
 		return
 	}
-	_ = s.store.SetTargetMuted(name, true)
+	if err := s.store.SetTargetMuted(name, true); err != nil {
+		http.Error(w, `{"error":"target not found"}`, http.StatusNotFound)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok","message":"target muted"}`))
@@ -173,7 +192,10 @@ func (s *Server) handleUnmuteTarget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"target name required"}`, http.StatusBadRequest)
 		return
 	}
-	_ = s.store.SetTargetMuted(name, false)
+	if err := s.store.SetTargetMuted(name, false); err != nil {
+		http.Error(w, `{"error":"target not found"}`, http.StatusNotFound)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok","message":"target unmuted"}`))
@@ -213,20 +235,28 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 			passedStr = "true"
 		}
 		_ = writer.Write([]string{
-			h.Target,
+			sanitizeCSVField(h.Target),
 			h.DrilledAt.Format(time.RFC3339),
 			passedStr,
-			h.Stage,
-			h.BackupPath,
-			h.BackupSize,
+			sanitizeCSVField(h.Stage),
+			sanitizeCSVField(h.BackupPath),
+			sanitizeCSVField(h.BackupSize),
 			strconv.FormatInt(h.RestoreMs, 10),
 			strconv.FormatInt(h.TotalDuration, 10),
 			strconv.Itoa(h.ChecksTotal),
 			strconv.Itoa(h.ChecksPassed),
 			strconv.Itoa(h.ChecksFailed),
-			h.Error,
+			sanitizeCSVField(h.Error),
 		})
 	}
+}
+
+// sanitizeCSVField prevents CSV Formula Injection when opened in Excel/Sheets.
+func sanitizeCSVField(val string) string {
+	if len(val) > 0 && (val[0] == '=' || val[0] == '+' || val[0] == '-' || val[0] == '@' || val[0] == '\t' || val[0] == '\r') {
+		return "'" + val
+	}
+	return val
 }
 
 func (s *Server) startAlertWorker() {
@@ -248,6 +278,13 @@ func (s *Server) CheckAndSendAlerts() {
 	now := time.Now().UTC()
 
 	for _, t := range targets {
+		if t.Status == StatusHealthy {
+			s.alertMu.Lock()
+			delete(s.lastAlerted, t.Name)
+			s.alertMu.Unlock()
+			continue
+		}
+
 		if t.Status != StatusOverdue || t.Muted {
 			continue
 		}
@@ -258,14 +295,18 @@ func (s *Server) CheckAndSendAlerts() {
 			s.alertMu.Unlock()
 			continue
 		}
-		s.lastAlerted[t.Name] = now
 		s.alertMu.Unlock()
 
 		msg := fmt.Sprintf("⚠️ [Lazarus Dead Man's Snitch] Target %q is OVERDUE! Last successful drill was at %s.",
 			t.Name, t.LastDrilledAt.Format(time.RFC3339))
 
-		payload := map[string]string{"text": msg}
-		body, _ := json.Marshal(payload)
+		var body []byte
+		switch strings.ToLower(s.cfg.AlertFormat) {
+		case "discord":
+			body, _ = json.Marshal(map[string]string{"content": msg})
+		default: // slack, teams, generic, etc.
+			body, _ = json.Marshal(map[string]string{"text": msg})
+		}
 
 		req, err := http.NewRequest(http.MethodPost, s.cfg.AlertWebhookURL, bytes.NewReader(body))
 		if err != nil {
@@ -281,5 +322,13 @@ func (s *Server) CheckAndSendAlerts() {
 			continue
 		}
 		_ = resp.Body.Close()
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			s.alertMu.Lock()
+			s.lastAlerted[t.Name] = now
+			s.alertMu.Unlock()
+		} else {
+			log.Printf("lazarus-server: alert delivery for target %q returned status %d", t.Name, resp.StatusCode)
+		}
 	}
 }

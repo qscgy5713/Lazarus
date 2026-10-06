@@ -86,6 +86,7 @@ func TestDecryptFailsOnNonGPGFile(t *testing.T) {
 func TestDecryptCleansUpTempFileOnFailure(t *testing.T) {
 	requireGPG(t)
 	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
 	encPath := encryptSymmetric(t, dir, "backup", "secret data", "the-real-passphrase")
 
 	countLazarusTemp := func() int {

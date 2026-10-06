@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -119,11 +120,7 @@ func (s *Store) SetTargetMuted(name string, muted bool) error {
 
 	rec, exists := s.targets[name]
 	if !exists {
-		rec = &TargetRecord{
-			Name:          name,
-			RecentHistory: make([]HistoryRecord, 0),
-		}
-		s.targets[name] = rec
+		return fmt.Errorf("target %q not found", name)
 	}
 	rec.Muted = muted
 	s.save()
@@ -254,9 +251,29 @@ func (s *Store) save() {
 	}
 	dir := filepath.Dir(s.filePath)
 	if dir != "" && dir != "." {
-		_ = os.MkdirAll(dir, 0755)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return
+		}
+	} else {
+		dir = "."
 	}
-	_ = os.WriteFile(s.filePath, data, 0644)
+
+	tmp, err := os.CreateTemp(dir, ".lazarus-server-*.tmp")
+	if err != nil {
+		return
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		return
+	}
+	_ = os.Chmod(tmpPath, 0644)
+	_ = os.Rename(tmpPath, s.filePath)
 }
 
 // SeedDemoData populates representative drill records (healthy, failed, and overdue) for demonstration.

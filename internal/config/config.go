@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -292,6 +293,10 @@ func (c *Config) applyDefaultsAndValidate() error {
 			if t.SizeDrift.MaxDecreasePct <= 0 || t.SizeDrift.MaxDecreasePct > 100 {
 				return fmt.Errorf("target %q: size_drift.max_decrease_pct must be > 0 and <= 100", t.Name)
 			}
+		}
+
+		if t.CleanupBackup && strings.ContainsAny(t.Path, "*?[") {
+			return fmt.Errorf("target %q: cleanup_backup cannot be combined with glob pattern path %q to prevent deleting rolling backup archives", t.Name, t.Path)
 		}
 
 		for j := range t.Checks {

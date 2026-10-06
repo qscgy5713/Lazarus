@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -25,14 +26,15 @@ import (
 // cleanly and immediately rather than hang on an interactive prompt nobody
 // is there to answer.
 func Decrypt(ctx context.Context, path, passphrase string) (string, func(), error) {
-	tmp, err := os.CreateTemp("", "lazarus-decrypt-*")
+	// Create a private 0700 directory so decrypted data is never exposed
+	// to other local users, even during gpg execution before chmod.
+	tmpDir, err := os.MkdirTemp("", "lazarus-decrypt-*")
 	if err != nil {
-		return "", nil, fmt.Errorf("create temp file: %w", err)
+		return "", nil, fmt.Errorf("create temp decrypt dir: %w", err)
 	}
-	tmpPath := tmp.Name()
-	tmp.Close()
-	cleanup := func() { os.Remove(tmpPath) }
+	cleanup := func() { _ = os.RemoveAll(tmpDir) }
 
+	tmpPath := filepath.Join(tmpDir, "decrypted.bak")
 	args := []string{"--batch", "--yes", "--output", tmpPath}
 
 	// The passphrase travels over its own file descriptor (3), never as a

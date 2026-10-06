@@ -81,6 +81,10 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 
 	if target.CleanupBackup {
 		defer func() {
+			// Never delete a failed backup: it is critical evidence needed for post-mortem debugging
+			if !result.Passed || result.Err != nil {
+				return
+			}
 			if result.Backup != nil && result.Backup.Path != "" {
 				_ = os.Remove(result.Backup.Path)
 			} else if target.Path != "" {
@@ -97,7 +101,11 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 	}
 
 	if target.S3 != nil {
-		if err := s3fetch.New().Download(ctx, target.S3, target.Path); err != nil {
+		downloader := s3fetch.New()
+		if isTerminal(os.Stderr) {
+			downloader.ProgressWriter = os.Stderr
+		}
+		if err := downloader.Download(ctx, target.S3, target.Path); err != nil {
 			result.Err = fmt.Errorf("s3 download: %w", err)
 			return
 		}
@@ -340,4 +348,12 @@ func RunAll(ctx context.Context, targets []config.Target, st *state.State, paral
 
 	wg.Wait()
 	return results
+}
+
+func isTerminal(f *os.File) bool {
+	stat, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (stat.Mode() & os.ModeCharDevice) != 0
 }

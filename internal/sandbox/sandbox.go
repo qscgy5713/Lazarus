@@ -50,7 +50,7 @@ func Start(ctx context.Context, engine config.Engine, image string) (*Sandbox, e
 func StartWithMount(ctx context.Context, engine config.Engine, image, dataDir string) (*Sandbox, error) {
 	name := fmt.Sprintf("lazarus-verify-%d-%d", time.Now().UnixNano(), nameCounter.Add(1))
 
-	args := []string{"run", "--detach", "--name", name, "--rm"}
+	args := []string{"run", "--detach", "--name", name, "--rm", "--network", "none"}
 	if dataDir != "" {
 		args = append(args, "-v", dataDir+":/data")
 	}
