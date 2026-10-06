@@ -70,7 +70,7 @@ tar xzf Lazarus_*_linux_amd64.tar.gz
 ./lazarus --version
 ```
 
-或者從原始碼建置（需要 Go 1.27+）：
+或者從原始碼建置（需要 Go 1.24+）：
 
 ```bash
 git clone https://github.com/qscgy5713/Lazarus.git
@@ -373,7 +373,11 @@ repo 根目錄的 [`docker-compose.yml`](docker-compose.yml) 預先配置好了�
 docker compose up -d server
 ```
 
-服務預設在 `http://localhost:8080` 啟動，瀏覽器直接打開即可看到視覺化儀表板。
+服務預設在 `http://localhost:8080` 啟動，瀏覽器直接打開即可看到視覺化儀表板。亦可直接使用 GitHub Container Registry (GHCR) 預建映像檔：
+
+```bash
+docker run -d --name lazarus-server -p 8080:8080 -v lazarus-data:/data ghcr.io/qscgy5713/lazarus-server:latest
+```
 
 ### 執行備份還原演練
 
