@@ -5,7 +5,7 @@
 # (for GPG-encrypted backups). None of these are optional add-ons: leaving
 # one out just means whichever target needs it fails with "executable file
 # not found" instead of a clean feature gap.
-FROM golang:1.24-alpine AS build
+FROM golang:alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

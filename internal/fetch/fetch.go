@@ -31,6 +31,7 @@ func Run(ctx context.Context, command string, timeout time.Duration) error {
 	}
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	prepareCmd(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("fetch command failed: %w: %s", err, strings.TrimSpace(string(out)))

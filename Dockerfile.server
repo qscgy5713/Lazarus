@@ -1,5 +1,5 @@
 # Multi-stage build for Lazarus Control Plane server
-FROM golang:1.24-alpine AS build
+FROM golang:alpine AS build
 
 WORKDIR /src
 COPY go.mod go.sum* ./
