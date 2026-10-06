@@ -138,6 +138,12 @@ func printConfigSummary(w io.Writer, cfg *config.Config, targets []config.Target
 		if t.FetchCommand != "" {
 			fmt.Fprintf(w, "    fetch_command: %s (timeout %s)\n", t.FetchCommand, t.FetchTimeout)
 		}
+		if t.S3 != nil {
+			fmt.Fprintf(w, "    s3: bucket=%s key=%s (region %s)\n", t.S3.Bucket, t.S3.Key, t.S3.Region)
+		}
+		if t.CleanupBackup {
+			fmt.Fprintf(w, "    cleanup_backup: true\n")
+		}
 		if t.Image != "" {
 			fmt.Fprintf(w, "    image: %s\n", t.Image)
 		}
@@ -173,6 +179,9 @@ type configSummaryTargetJSON struct {
 	Path                    string  `json:"path"`
 	FetchCommand            string  `json:"fetch_command,omitempty"`
 	FetchTimeoutMs          int64   `json:"fetch_timeout_ms,omitempty"`
+	S3Bucket                string  `json:"s3_bucket,omitempty"`
+	S3Key                   string  `json:"s3_key,omitempty"`
+	CleanupBackup           bool    `json:"cleanup_backup,omitempty"`
 	Image                   string  `json:"image,omitempty"`
 	MaxAgeMs                int64   `json:"max_age_ms,omitempty"`
 	MaxRestoreDurationMs    int64   `json:"max_restore_duration_ms,omitempty"`
@@ -204,10 +213,15 @@ func printConfigSummaryJSON(w io.Writer, cfg *config.Config, targets []config.Ta
 			Path:                 t.Path,
 			FetchCommand:         t.FetchCommand,
 			FetchTimeoutMs:       t.FetchTimeout.Milliseconds(),
+			CleanupBackup:        t.CleanupBackup,
 			Image:                t.Image,
 			MaxAgeMs:             t.MaxAge.Milliseconds(),
 			MaxRestoreDurationMs: t.MaxRestoreDuration.Milliseconds(),
 			Checks:               len(t.Checks),
+		}
+		if t.S3 != nil {
+			jt.S3Bucket = t.S3.Bucket
+			jt.S3Key = t.S3.Key
 		}
 		if t.SizeDrift != nil {
 			jt.SizeDriftMaxDecreasePct = t.SizeDrift.MaxDecreasePct

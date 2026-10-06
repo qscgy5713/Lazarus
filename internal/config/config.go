@@ -247,7 +247,14 @@ func (c *Config) applyDefaultsAndValidate() error {
 			t.FetchTimeout = defaultFetchTimeout
 		}
 
+		if t.S3 != nil && t.FetchCommand != "" {
+			return fmt.Errorf("target %q: cannot configure both s3 and fetch_command", t.Name)
+		}
+
 		if t.S3 != nil {
+			if strings.ContainsAny(t.Path, "*?[") {
+				return fmt.Errorf("target %q: s3 download path %q cannot contain glob wildcards", t.Name, t.Path)
+			}
 			if t.S3.Bucket == "" {
 				return fmt.Errorf("target %q: s3.bucket is required", t.Name)
 			}

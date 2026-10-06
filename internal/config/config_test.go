@@ -623,3 +623,42 @@ targets:
 		t.Errorf("Notify.Format = %q, want %q", cfg.Notify.Format, "lazarus")
 	}
 }
+
+func TestRejectS3WithGlobPath(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: s3-glob
+    engine: postgres
+    path: /backups/*.sql
+    s3:
+      bucket: my-bkt
+      key: backup.sql
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error when S3 target path contains glob wildcards")
+	}
+	if !strings.Contains(err.Error(), "s3 download path") {
+		t.Errorf("error = %q, want mention of s3 download path", err)
+	}
+}
+
+func TestRejectS3AndFetchCommandCombined(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: dual-fetch
+    engine: postgres
+    path: /backups/db.sql
+    fetch_command: "curl -O https://example.com/db.sql"
+    s3:
+      bucket: my-bkt
+      key: backup.sql
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error when both s3 and fetch_command are configured")
+	}
+	if !strings.Contains(err.Error(), "cannot configure both s3 and fetch_command") {
+		t.Errorf("error = %q, want mention of s3 and fetch_command conflict", err)
+	}
+}

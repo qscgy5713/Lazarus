@@ -21,11 +21,28 @@ import (
 // finding this tool exists to produce. gpgPassphrase is only used when
 // file.Encrypted; ignored otherwise.
 func Run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, file *backup.File, gpgPassphrase string) (string, error) {
+	// If the backup file is encrypted, decrypt it once up-front so that
+	// scanning roles and streaming into the sandbox share the same
+	// decrypted file rather than running expensive GPG decryption twice.
+	workFile := file
+	if file.Encrypted {
+		decryptedPath, cleanupDecrypt, err := decrypt.Decrypt(ctx, file.Path, gpgPassphrase)
+		if err != nil {
+			return "", err
+		}
+		defer cleanupDecrypt()
+
+		cloned := *file
+		cloned.Path = decryptedPath
+		cloned.Encrypted = false
+		workFile = &cloned
+	}
+
 	// Plain-SQL Postgres dumps reference the roles that owned the original
 	// database; create them first so a missing role doesn't fail a backup
 	// that's actually fine. pg_restore handles this itself via --no-owner.
-	if engine == config.EnginePostgres && file.Format == backup.FormatPlainSQL {
-		scanReader, scanCloser, err := open(ctx, file, gpgPassphrase)
+	if engine == config.EnginePostgres && workFile.Format == backup.FormatPlainSQL {
+		scanReader, scanCloser, err := open(ctx, workFile, "")
 		if err != nil {
 			return "", err
 		}
@@ -37,7 +54,7 @@ func Run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, file *b
 		}
 	}
 
-	reader, closer, err := open(ctx, file, gpgPassphrase)
+	reader, closer, err := open(ctx, workFile, "")
 	if err != nil {
 		return "", err
 	}
