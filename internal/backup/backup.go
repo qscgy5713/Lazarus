@@ -23,14 +23,24 @@ const (
 	FormatRedisRDB       Format = "redis-rdb"
 )
 
+// Compression describes the compression algorithm wrapping a backup dump.
+type Compression string
+
+const (
+	CompressionNone Compression = ""
+	CompressionGzip Compression = "gzip"
+	CompressionZstd Compression = "zstd"
+)
+
 // File is a located backup, ready to restore.
 type File struct {
-	Path       string
-	Size       int64
-	ModTime    time.Time
-	Compressed bool // gzip
-	Encrypted  bool // GPG — decrypted before Compressed is ever checked
-	Format     Format
+	Path        string
+	Size        int64
+	ModTime     time.Time
+	Compressed  bool // true for gzip or zstd
+	Compression Compression
+	Encrypted   bool // GPG — decrypted before Compressed is ever checked
+	Format      Format
 }
 
 func (f File) Age(now time.Time) time.Duration {
@@ -96,7 +106,14 @@ func Locate(pattern string) (*File, error) {
 	if file.Encrypted {
 		nameUnderEncryption = strings.TrimSuffix(newest, filepath.Ext(newest))
 	}
-	file.Compressed = strings.HasSuffix(strings.ToLower(nameUnderEncryption), ".gz")
+	lowerName := strings.ToLower(nameUnderEncryption)
+	if strings.HasSuffix(lowerName, ".gz") {
+		file.Compressed = true
+		file.Compression = CompressionGzip
+	} else if strings.HasSuffix(lowerName, ".zst") || strings.HasSuffix(lowerName, ".zstd") {
+		file.Compressed = true
+		file.Compression = CompressionZstd
+	}
 
 	format, err := detectFormat(newest, file.Compressed || file.Encrypted)
 	if err != nil {

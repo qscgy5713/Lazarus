@@ -6,7 +6,6 @@
 package sqlitecheck
 
 import (
-	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -51,16 +50,13 @@ func Prepare(ctx context.Context, file *backup.File, gpgPassphrase string) (stri
 	}
 	defer src.Close()
 
-	var reader io.Reader = src
-	if file.Compressed {
-		gz, err := gzip.NewReader(src)
-		if err != nil {
-			cleanupAll()
-			return "", nil, fmt.Errorf("backup %q is not readable as gzip: %w", srcPath, err)
-		}
-		defer gz.Close()
-		reader = gz
+	decomp, err := file.OpenDecompressor(src)
+	if err != nil {
+		cleanupAll()
+		return "", nil, err
 	}
+	defer decomp.Close()
+	reader := decomp
 
 	tmp, err := os.CreateTemp("", "lazarus-sqlite-*.db")
 	if err != nil {

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
+
 	"lazarus/internal/backup"
 	"lazarus/internal/config"
 )
@@ -81,7 +83,7 @@ func TestPrepareDecompressesGzip(t *testing.T) {
 	gz.Close()
 	f.Close()
 
-	path, cleanup, err := Prepare(context.Background(), &backup.File{Path: gzPath, Compressed: true}, "")
+	path, cleanup, err := Prepare(context.Background(), &backup.File{Path: gzPath, Compressed: true, Compression: backup.CompressionGzip}, "")
 	if err != nil {
 		t.Fatalf("Prepare() error = %v", err)
 	}
@@ -89,6 +91,41 @@ func TestPrepareDecompressesGzip(t *testing.T) {
 
 	if err := IntegrityCheck(context.Background(), path); err != nil {
 		t.Errorf("IntegrityCheck() on the decompressed copy = %v, want nil", err)
+	}
+}
+
+func TestPrepareDecompressesZstdSQLite(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+	dbPath := newRealDB(t, dir, 2)
+
+	raw, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zstPath := filepath.Join(dir, "source.db.zst")
+	f, err := os.Create(zstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw, err := zstd.NewWriter(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zw.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	zw.Close()
+	f.Close()
+
+	path, cleanup, err := Prepare(context.Background(), &backup.File{Path: zstPath, Compressed: true, Compression: backup.CompressionZstd}, "")
+	if err != nil {
+		t.Fatalf("Prepare() zstd error = %v", err)
+	}
+	defer cleanup()
+
+	if err := IntegrityCheck(context.Background(), path); err != nil {
+		t.Errorf("IntegrityCheck() on zstd decompressed copy = %v, want nil", err)
 	}
 }
 

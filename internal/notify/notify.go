@@ -24,10 +24,12 @@ import (
 type Format string
 
 const (
-	FormatSlack   Format = "slack"
-	FormatDiscord Format = "discord"
-	FormatGeneric Format = "generic"
-	FormatLazarus Format = "lazarus"
+	FormatSlack    Format = "slack"
+	FormatDiscord  Format = "discord"
+	FormatTelegram Format = "telegram"
+	FormatTeams    Format = "teams"
+	FormatGeneric  Format = "generic"
+	FormatLazarus  Format = "lazarus"
 )
 
 // When decides which runs are worth a message.
@@ -116,6 +118,10 @@ func (n *Notifier) buildPayload(results []verify.Result) ([]byte, error) {
 	switch n.format {
 	case FormatDiscord:
 		return json.Marshal(buildDiscord(results))
+	case FormatTelegram:
+		return json.Marshal(buildTelegram(results))
+	case FormatTeams:
+		return json.Marshal(buildTeams(results))
 	case FormatGeneric, FormatLazarus:
 		return json.Marshal(buildGeneric(results))
 	default: // Slack, and anything Slack-compatible (Mattermost, etc.)
@@ -294,6 +300,71 @@ func buildGeneric(results []verify.Result) genericPayload {
 		payload.Results = append(payload.Results, gr)
 	}
 	return payload
+}
+
+type telegramPayload struct {
+	Text      string `json:"text"`
+	ParseMode string `json:"parse_mode"`
+}
+
+func buildTelegram(results []verify.Result) telegramPayload {
+	failed := anyFailed(results)
+	header := "<b>✅ Lazarus: All Restorations Passed</b>"
+	if failed {
+		header = "<b>🚨 Lazarus: Restoration Drill Failed</b>"
+	}
+	summaryText := FormatMessage(results)
+	escapedSummary := htmlEscape(summaryText)
+	text := fmt.Sprintf("%s\n\n<pre>%s</pre>", header, truncate(escapedSummary))
+	return telegramPayload{
+		Text:      text,
+		ParseMode: "HTML",
+	}
+}
+
+type teamsPayload struct {
+	Type       string         `json:"@type"`
+	Context    string         `json:"@context"`
+	ThemeColor string         `json:"themeColor"`
+	Summary    string         `json:"summary"`
+	Title      string         `json:"title"`
+	Sections   []teamsSection `json:"sections"`
+}
+
+type teamsSection struct {
+	ActivityTitle string `json:"activityTitle,omitempty"`
+	Text          string `json:"text"`
+}
+
+func buildTeams(results []verify.Result) teamsPayload {
+	failed := anyFailed(results)
+	themeColor := "2ecc71" // green
+	title := "✅ Lazarus: All Restorations Passed"
+	if failed {
+		themeColor = "e74c3c" // red
+		title = "🚨 Lazarus: Restoration Drill Failed"
+	}
+	summaryText := FormatMessage(results)
+	return teamsPayload{
+		Type:       "MessageCard",
+		Context:    "http://schema.org/extensions",
+		ThemeColor: themeColor,
+		Summary:    title,
+		Title:      title,
+		Sections: []teamsSection{
+			{
+				ActivityTitle: "Restoration Drill Summary",
+				Text:          fmt.Sprintf("```\n%s\n```", truncate(summaryText)),
+			},
+		},
+	}
+}
+
+func htmlEscape(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
 }
 
 // FormatMessage builds the human-readable summary sent to chat webhooks.

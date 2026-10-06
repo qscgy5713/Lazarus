@@ -48,6 +48,7 @@ func (s *Server) ListenAndServe() error {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
+	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
 	s.mux.HandleFunc("GET /", s.handleDashboard)
 	s.mux.HandleFunc("POST /api/v1/reports", s.handlePostReport)
 	s.mux.HandleFunc("GET /api/v1/targets", s.handleGetTargets)

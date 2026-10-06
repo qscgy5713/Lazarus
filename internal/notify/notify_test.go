@@ -310,3 +310,69 @@ func TestSendLazarusFormatEnriched(t *testing.T) {
 		t.Errorf("unexpected results in payload: %+v", payload.Results)
 	}
 }
+
+func TestSendTelegramFormat(t *testing.T) {
+	var received []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	n := New(srv.URL, FormatTelegram, WhenAlways)
+	results := []verify.Result{
+		failing("orders-db", verify.StageChecks, "row count too low"),
+	}
+
+	if err := n.Send(context.Background(), results); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	var payload telegramPayload
+	if err := json.Unmarshal(received, &payload); err != nil {
+		t.Fatalf("unmarshal telegram payload: %v", err)
+	}
+
+	if payload.ParseMode != "HTML" {
+		t.Errorf("parse_mode = %q, want HTML", payload.ParseMode)
+	}
+	if !strings.Contains(payload.Text, "<b>🚨 Lazarus: Restoration Drill Failed</b>") {
+		t.Errorf("telegram text missing header; got %q", payload.Text)
+	}
+	if !strings.Contains(payload.Text, "<pre>") {
+		t.Errorf("telegram text missing <pre> tag; got %q", payload.Text)
+	}
+}
+
+func TestSendTeamsFormat(t *testing.T) {
+	var received []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	n := New(srv.URL, FormatTeams, WhenAlways)
+	results := []verify.Result{
+		failing("payments-db", verify.StageRestore, "connection timeout"),
+	}
+
+	if err := n.Send(context.Background(), results); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	var payload teamsPayload
+	if err := json.Unmarshal(received, &payload); err != nil {
+		t.Fatalf("unmarshal teams payload: %v", err)
+	}
+
+	if payload.Type != "MessageCard" {
+		t.Errorf("@type = %q, want MessageCard", payload.Type)
+	}
+	if payload.ThemeColor != "e74c3c" {
+		t.Errorf("themeColor = %q, want red (e74c3c) for failure", payload.ThemeColor)
+	}
+	if len(payload.Sections) == 0 || !strings.Contains(payload.Sections[0].Text, "payments-db") {
+		t.Errorf("teams sections missing failure detail; got %+v", payload.Sections)
+	}
+}

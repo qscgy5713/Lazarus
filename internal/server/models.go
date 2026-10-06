@@ -47,20 +47,20 @@ const (
 
 // TargetRecord represents a tracked database target and its most recent drill result.
 type TargetRecord struct {
-	Name              string          `json:"name"`
-	Status            TargetStatus    `json:"status"`
-	LastPassed        bool            `json:"last_passed"`
-	LastDrilledAt     time.Time       `json:"last_drilled_at"`
-	LastHostname      string          `json:"last_hostname,omitempty"`
-	LastStage         string          `json:"last_stage,omitempty"`
-	LastError         string          `json:"last_error,omitempty"`
-	LastBackupPath    string          `json:"last_backup_path,omitempty"`
-	LastBackupSize    string          `json:"last_backup_size,omitempty"`
-	LastBackupAge     string          `json:"last_backup_age,omitempty"`
-	LastDurationMs    int64           `json:"last_duration_ms"`
-	LastRestoreMs     int64           `json:"last_restore_ms"`
-	LastChecks        []InboundCheck  `json:"last_checks,omitempty"`
-	RecentHistory     []HistoryRecord `json:"recent_history,omitempty"`
+	Name           string          `json:"name"`
+	Status         TargetStatus    `json:"status"`
+	LastPassed     bool            `json:"last_passed"`
+	LastDrilledAt  time.Time       `json:"last_drilled_at"`
+	LastHostname   string          `json:"last_hostname,omitempty"`
+	LastStage      string          `json:"last_stage,omitempty"`
+	LastError      string          `json:"last_error,omitempty"`
+	LastBackupPath string          `json:"last_backup_path,omitempty"`
+	LastBackupSize string          `json:"last_backup_size,omitempty"`
+	LastBackupAge  string          `json:"last_backup_age,omitempty"`
+	LastDurationMs int64           `json:"last_duration_ms"`
+	LastRestoreMs  int64           `json:"last_restore_ms"`
+	LastChecks     []InboundCheck  `json:"last_checks,omitempty"`
+	RecentHistory  []HistoryRecord `json:"recent_history,omitempty"`
 }
 
 type HistoryRecord struct {

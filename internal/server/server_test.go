@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -185,5 +186,34 @@ func TestDemoMode(t *testing.T) {
 	sum := s.store.GetSummary()
 	if sum.TotalTargets == 0 || sum.Healthy == 0 || sum.Failed == 0 || sum.Overdue == 0 {
 		t.Errorf("demo mode should seed healthy, failed, and overdue targets; got %+v", sum)
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	s := New(Config{DemoMode: true})
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	body := rec.Body.String()
+	expectedMetrics := []string{
+		"lazarus_targets_total{status=\"healthy\"}",
+		"lazarus_targets_total{status=\"failed\"}",
+		"lazarus_targets_total{status=\"overdue\"}",
+		"lazarus_target_status{target=",
+		"lazarus_target_last_drill_timestamp_seconds{target=",
+		"lazarus_target_restore_duration_seconds{target=",
+		"lazarus_target_duration_seconds{target=",
+	}
+
+	for _, metric := range expectedMetrics {
+		if !strings.Contains(body, metric) {
+			t.Errorf("metrics body missing expected metric prefix %q; body:\n%s", metric, body)
+		}
 	}
 }

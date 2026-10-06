@@ -3,7 +3,6 @@
 package restore
 
 import (
-	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -102,13 +101,13 @@ func open(ctx context.Context, file *backup.File, gpgPassphrase string) (io.Read
 		return f, cleanupAll, nil
 	}
 
-	gz, err := gzip.NewReader(f)
+	decomp, err := file.OpenDecompressor(f)
 	if err != nil {
 		cleanupAll()
-		return nil, nil, fmt.Errorf("backup %q is not readable as gzip: %w", path, err)
+		return nil, nil, err
 	}
-	cleanups = append(cleanups, func() { gz.Close() })
-	return gz, cleanupAll, nil
+	cleanups = append(cleanups, func() { decomp.Close() })
+	return decomp, cleanupAll, nil
 }
 
 func restoreCommand(engine config.Engine, file *backup.File) ([]string, error) {

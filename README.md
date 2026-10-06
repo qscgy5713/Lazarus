@@ -263,7 +263,8 @@ fetch_timeout: 5m   # 預設 5 分鐘，避免抓取卡住讓 cron 無限等下�
 | SQLite | 資料庫檔案本身的完整複本（不是 `.dump` 出來的 SQL 文字），沒有伺服器可以匯入，本來就是一個獨立檔案 |
 | Redis RDB | Redis 二進位快照檔（`.rdb`），自動偵測魔術位元組 `REDIS`，透過拋棄式容器加載並執行完整性校驗 |
 | gzip 壓縮 | 以上任一種加上 `.gz`，串流解壓縮，不佔額外磁碟空間 |
-| GPG 加密 | 以上任一種（含已經 gzip 壓縮過的）加上 `.gpg`/`.pgp`/`.asc`，自動偵測並解密 |
+| Zstandard (zstd) 壓縮 | 以上任一種加上 `.zst` 或 `.zstd`，超高速串流解壓縮，解壓速度比 gzip 快 3~5 倍 |
+| GPG 加密 | 以上任一種（含已經 gzip / zstd 壓縮過的）加上 `.gpg`/`.pgp`/`.asc`，自動偵測並解密 |
 
 ### SQLite 不需要 Docker
 
@@ -324,7 +325,7 @@ LAZARUS_GPG_PASSPHRASE=your-passphrase lazarus --config lazarus.yml
 
 ```yaml
 notify:
-  format: slack        # slack (Block Kit) | discord (Rich Embed) | generic | lazarus
+  format: slack        # slack | discord | telegram | teams | generic | lazarus
   when: on_failure     # on_failure | always | never
 ```
 
@@ -337,6 +338,8 @@ LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx ./lazarus --config laza
 通知原生支援各平台的富文本排版：
 - **Slack (Block Kit)**：具備標題 Header、狀態區塊與 Markdown 錯誤碼塊。
 - **Discord (Rich Embeds)**：通過時顯示綠色邊框 (`#2ecc71`)，失敗時顯示紅色邊框 (`#e74c3c`)，並逐條列出每個目標的還原耗時與錯誤階段。
+- **Telegram Bot**：原生 HTML 格式卡片，具備專屬狀態 Header 與 `<pre>` 等寬代碼區塊。
+- **Microsoft Teams**：MessageCard / Adaptive Card 格式，支援色彩飾條（綠/紅）與 Markdown 清單。
 
 失敗時的告警卡片格式長這樣：
 
@@ -463,6 +466,7 @@ docker compose run --rm --entrypoint sh \
 - **全時態健康儀表板 (Health Overview)**：直觀掌握各資料庫目標最新狀態（`PASS` / `FAIL` / `OVERDUE`）、備份大小變化趨勢與還原耗時。
 - **Dead Man's Snitch（逾期靜默失效偵測）**：傳統監控只在腳本報錯時發出警報，但如果 crontab 被誤刪、伺服器離線或備份腳本死當，監控系統根本收不到任何通知。Control Plane 在目標超過預期時間（預設 26 小時）未收到還原報告時，自動標記為 `OVERDUE` 並亮起警報。
 - **合規稽核證明一鍵產生 (Audit Proof)**：內建合規報告匯出功能，將歷史還原紀錄整合成具時間戳記與資料筆數校驗的災難復原演練報告，直接提供給 SOC 2 Type II、ISO 27001 或金融監管稽核人員。
+- **Prometheus 指標暴露 (`/metrics`)**：原生暴露標準 Prometheus Exporter 端點，包含各目標還原耗時 (`lazarus_target_restore_duration_seconds`)、健康狀態 (`lazarus_target_status`) 與統計指標，無縫接入 Grafana 與 Alertmanager。
 - **純 Go 輕量單一執行檔**：無需額外架設 PostgreSQL/MySQL 或 Redis，自帶內嵌 Web 介面與持久化狀態，資源消耗低於 20MB RAM。
 
 ### 獨立執行檔啟動

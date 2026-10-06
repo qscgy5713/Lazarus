@@ -275,9 +275,9 @@ func (c *Config) applyNotifyDefaults() error {
 		c.Notify.Format = defaultNotifyFormat
 	}
 	switch c.Notify.Format {
-	case "slack", "discord", "generic", "lazarus":
+	case "slack", "discord", "telegram", "teams", "generic", "lazarus":
 	default:
-		return fmt.Errorf("notify.format %q is not slack, discord, generic or lazarus", c.Notify.Format)
+		return fmt.Errorf("notify.format %q is not slack, discord, telegram, teams, generic or lazarus", c.Notify.Format)
 	}
 
 	if c.Notify.When == "" {

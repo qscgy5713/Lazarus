@@ -227,3 +227,38 @@ func TestAge(t *testing.T) {
 		t.Errorf("Age() = %v, want 90m", got)
 	}
 }
+
+func TestDetectsZstdFromExtension(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "dump.sql.zst", []byte{0x28, 0xb5, 0x2f, 0xfd}, time.Now())
+
+	got, err := Locate(path)
+	if err != nil {
+		t.Fatalf("Locate() error = %v", err)
+	}
+	if !got.Compressed {
+		t.Error("Compressed = false, want true for a .zst file")
+	}
+	if got.Compression != CompressionZstd {
+		t.Errorf("Compression = %q, want %q", got.Compression, CompressionZstd)
+	}
+}
+
+func TestDetectsZstdUnderneathEncryption(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "dump.sql.zst.gpg", []byte("encrypted"), time.Now())
+
+	got, err := Locate(path)
+	if err != nil {
+		t.Fatalf("Locate() error = %v", err)
+	}
+	if !got.Encrypted {
+		t.Error("Encrypted = false, want true for dump.sql.zst.gpg")
+	}
+	if !got.Compressed {
+		t.Error("Compressed = false, want true for dump.sql.zst.gpg")
+	}
+	if got.Compression != CompressionZstd {
+		t.Errorf("Compression = %q, want %q", got.Compression, CompressionZstd)
+	}
+}
