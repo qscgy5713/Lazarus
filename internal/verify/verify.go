@@ -15,6 +15,7 @@ import (
 	"lazarus/internal/fetch"
 	"lazarus/internal/redischeck"
 	"lazarus/internal/restore"
+	"lazarus/internal/s3fetch"
 	"lazarus/internal/sandbox"
 	"lazarus/internal/sqlitecheck"
 	"lazarus/internal/state"
@@ -80,6 +81,13 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 	if target.FetchCommand != "" {
 		if err := fetch.Run(ctx, target.FetchCommand, target.FetchTimeout); err != nil {
 			result.Err = err
+			return
+		}
+	}
+
+	if target.S3 != nil {
+		if err := s3fetch.New().Download(ctx, target.S3, target.Path); err != nil {
+			result.Err = fmt.Errorf("s3 download: %w", err)
 			return
 		}
 	}

@@ -43,12 +43,14 @@ const (
 	StatusHealthy TargetStatus = "healthy"
 	StatusFailed  TargetStatus = "failed"
 	StatusOverdue TargetStatus = "overdue"
+	StatusMuted   TargetStatus = "muted"
 )
 
 // TargetRecord represents a tracked database target and its most recent drill result.
 type TargetRecord struct {
 	Name           string          `json:"name"`
 	Status         TargetStatus    `json:"status"`
+	Muted          bool            `json:"muted"`
 	LastPassed     bool            `json:"last_passed"`
 	LastDrilledAt  time.Time       `json:"last_drilled_at"`
 	LastHostname   string          `json:"last_hostname,omitempty"`
@@ -64,10 +66,17 @@ type TargetRecord struct {
 }
 
 type HistoryRecord struct {
+	Target        string    `json:"target,omitempty"`
 	DrilledAt     time.Time `json:"drilled_at"`
 	Passed        bool      `json:"passed"`
+	Stage         string    `json:"stage,omitempty"`
+	BackupPath    string    `json:"backup_path,omitempty"`
+	BackupSize    string    `json:"backup_size,omitempty"`
 	RestoreMs     int64     `json:"restore_ms"`
 	TotalDuration int64     `json:"total_duration_ms"`
+	ChecksTotal   int       `json:"checks_total,omitempty"`
+	ChecksPassed  int       `json:"checks_passed,omitempty"`
+	ChecksFailed  int       `json:"checks_failed,omitempty"`
 	Error         string    `json:"error,omitempty"`
 }
 
@@ -76,4 +85,5 @@ type Summary struct {
 	Healthy      int `json:"healthy"`
 	Failed       int `json:"failed"`
 	Overdue      int `json:"overdue"`
+	Muted        int `json:"muted"`
 }

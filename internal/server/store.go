@@ -79,12 +79,30 @@ func (s *Store) RecordReport(report InboundReport) {
 			rec.Status = StatusFailed
 		}
 
+		checksTotal := len(res.Checks)
+		checksPassed := 0
+		checksFailed := 0
+		for _, c := range res.Checks {
+			if c.Passed {
+				checksPassed++
+			} else {
+				checksFailed++
+			}
+		}
+
 		// Append to history, keeping last 20
 		rec.RecentHistory = append(rec.RecentHistory, HistoryRecord{
+			Target:        res.Target,
 			DrilledAt:     now,
 			Passed:        res.Passed,
+			Stage:         res.Stage,
+			BackupPath:    res.BackupPath,
+			BackupSize:    res.BackupSizeHuman,
 			RestoreMs:     res.RestoreDurationMs,
 			TotalDuration: res.DurationMs,
+			ChecksTotal:   checksTotal,
+			ChecksPassed:  checksPassed,
+			ChecksFailed:  checksFailed,
 			Error:         res.Error,
 		})
 		if len(rec.RecentHistory) > 20 {
@@ -93,6 +111,23 @@ func (s *Store) RecordReport(report InboundReport) {
 	}
 
 	s.save()
+}
+
+func (s *Store) SetTargetMuted(name string, muted bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, exists := s.targets[name]
+	if !exists {
+		rec = &TargetRecord{
+			Name:          name,
+			RecentHistory: make([]HistoryRecord, 0),
+		}
+		s.targets[name] = rec
+	}
+	rec.Muted = muted
+	s.save()
+	return nil
 }
 
 func (s *Store) GetTargets() []*TargetRecord {
@@ -105,8 +140,10 @@ func (s *Store) GetTargets() []*TargetRecord {
 	for _, rec := range s.targets {
 		// Clone record to prevent mutating internal pointer
 		cloned := *rec
-		// Dead Man's Snitch check: if older than threshold, mark as Overdue
-		if s.overdueThreshold > 0 && now.Sub(rec.LastDrilledAt) > s.overdueThreshold {
+		if rec.Muted {
+			cloned.Status = StatusMuted
+		} else if s.overdueThreshold > 0 && now.Sub(rec.LastDrilledAt) > s.overdueThreshold {
+			// Dead Man's Snitch check: if older than threshold, mark as Overdue
 			cloned.Status = StatusOverdue
 		}
 		out = append(out, &cloned)
@@ -131,9 +168,45 @@ func (s *Store) GetSummary() Summary {
 			sum.Failed++
 		case StatusOverdue:
 			sum.Overdue++
+		case StatusMuted:
+			sum.Muted++
 		}
 	}
 	return sum
+}
+
+func (s *Store) GetAuditHistory(targetFilter, statusFilter string, limit int) []HistoryRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var all []HistoryRecord
+	for _, rec := range s.targets {
+		if targetFilter != "" && rec.Name != targetFilter {
+			continue
+		}
+		for _, h := range rec.RecentHistory {
+			if statusFilter == "passed" && !h.Passed {
+				continue
+			}
+			if statusFilter == "failed" && h.Passed {
+				continue
+			}
+			record := h
+			if record.Target == "" {
+				record.Target = rec.Name
+			}
+			all = append(all, record)
+		}
+	}
+
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].DrilledAt.After(all[j].DrilledAt)
+	})
+
+	if limit > 0 && len(all) > limit {
+		all = all[:limit]
+	}
+	return all
 }
 
 func (s *Store) GetRecentReports() []InboundReport {

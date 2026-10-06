@@ -30,6 +30,10 @@
         </div>
       </div>
       <div class="flex items-center space-x-3">
+        <a href="/api/v1/export/csv" download class="px-3.5 py-1.5 text-xs font-semibold bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 rounded-lg border border-emerald-800/60 transition flex items-center space-x-1.5 shadow-sm">
+          <span>📥</span>
+          <span>Export CSV</span>
+        </a>
         <button onclick="openCertificateModal()" class="px-3.5 py-1.5 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 transition flex items-center space-x-1.5 shadow-sm">
           <span>📜</span>
           <span>Compliance Certificate</span>
@@ -45,7 +49,7 @@
   <!-- Main Content -->
   <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
     <!-- Summary Stats -->
-    <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+    <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
       <div class="bg-slate-900/70 border border-slate-800 rounded-xl p-5 shadow-sm">
         <div class="flex justify-between items-start text-slate-400 text-xs font-semibold uppercase tracking-wider">
           <span>Tracked Targets</span>
@@ -90,6 +94,17 @@
         <div class="mt-3 flex items-baseline justify-between">
           <span id="statOverdue" class="text-3xl font-extrabold text-amber-400">0</span>
           <span class="text-xs text-amber-500/80">&gt;26h without drill</span>
+        </div>
+      </div>
+
+      <div class="bg-slate-900/70 border border-slate-800 rounded-xl p-5 shadow-sm">
+        <div class="flex justify-between items-start text-slate-400 text-xs font-semibold uppercase tracking-wider">
+          <span>Maintenance (Muted)</span>
+          <span>🔕</span>
+        </div>
+        <div class="mt-3 flex items-baseline justify-between">
+          <span id="statMuted" class="text-3xl font-extrabold text-slate-400">0</span>
+          <span class="text-xs text-slate-500">Alerts muted</span>
         </div>
       </div>
     </section>
@@ -212,6 +227,7 @@
       document.getElementById('statHealthy').innerText = s.healthy || 0;
       document.getElementById('statFailed').innerText = s.failed || 0;
       document.getElementById('statOverdue').innerText = s.overdue || 0;
+      document.getElementById('statMuted').innerText = s.muted || 0;
     }
 
     function formatAgo(iso) {
@@ -221,6 +237,16 @@
       if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
       if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
       return Math.floor(diff / 86400) + 'd ago';
+    }
+
+    async function toggleMute(name, mute) {
+      const endpoint = mute ? `/api/v1/targets/${encodeURIComponent(name)}/mute` : `/api/v1/targets/${encodeURIComponent(name)}/unmute`;
+      try {
+        await fetch(endpoint, { method: 'POST' });
+        fetchData();
+      } catch (err) {
+        console.error('Failed to toggle mute:', err);
+      }
     }
 
     function renderTargets(targets) {
@@ -242,8 +268,16 @@
         } else if (t.status === 'overdue') {
           badgeColor = 'bg-amber-500/10 text-amber-400 border-amber-500/20';
           statusLabel = 'OVERDUE';
-          statusIcon = '⚠️';
+          statusIcon = '⏳';
+        } else if (t.status === 'muted') {
+          badgeColor = 'bg-slate-700/50 text-slate-300 border-slate-600/50';
+          statusLabel = 'MUTED';
+          statusIcon = '🔕';
         }
+
+        const muteBtn = t.muted
+          ? `<button onclick="toggleMute('${t.name}', false)" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">🔔 Unmute</button>`
+          : `<button onclick="toggleMute('${t.name}', true)" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 border border-slate-700 transition">🔕 Mute</button>`;
 
         const checksHtml = (t.last_checks || []).map(ch => {
           const detail = ch.passed ? '✓ OK (= ' + ch.value + ')' : '✗ ' + (ch.reason || 'FAILED');
@@ -254,7 +288,10 @@
         return '<div class="bg-slate-900/80 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4 hover:border-slate-700 transition">' +
           '<div class="flex items-center justify-between">' +
             '<div>' +
-              '<h3 class="text-base font-bold text-white tracking-tight">' + t.name + '</h3>' +
+              '<div class="flex items-center space-x-2">' +
+                '<h3 class="text-base font-bold text-white tracking-tight">' + t.name + '</h3>' +
+                muteBtn +
+              '</div>' +
               '<span class="text-xs text-slate-400 font-mono">Last drill: ' + formatAgo(t.last_drilled_at) + '</span>' +
             '</div>' +
             '<span class="px-2.5 py-1 text-xs font-semibold rounded-full border ' + badgeColor + ' flex items-center space-x-1">' +

@@ -217,3 +217,81 @@ func TestMetricsEndpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestMuteAndUnmuteTarget(t *testing.T) {
+	s := New(Config{})
+
+	// Post report
+	report := InboundReport{
+		Passed: true,
+		Total:  1,
+		Results: []InboundResult{
+			{Target: "db-mute-test", Passed: true, Stage: "done"},
+		},
+	}
+	body, _ := json.Marshal(report)
+	reqPost := httptest.NewRequest(http.MethodPost, "/api/v1/reports", bytes.NewReader(body))
+	recPost := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recPost, reqPost)
+
+	// Mute target
+	reqMute := httptest.NewRequest(http.MethodPost, "/api/v1/targets/db-mute-test/mute", nil)
+	recMute := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recMute, reqMute)
+
+	if recMute.Code != http.StatusOK {
+		t.Fatalf("Mute target code = %d, want 200", recMute.Code)
+	}
+
+	targets := s.store.GetTargets()
+	if len(targets) != 1 || !targets[0].Muted || targets[0].Status != StatusMuted {
+		t.Fatalf("expected target to be muted with StatusMuted, got %+v", targets[0])
+	}
+
+	sum := s.store.GetSummary()
+	if sum.Muted != 1 || sum.Healthy != 0 {
+		t.Fatalf("expected summary muted=1 healthy=0, got %+v", sum)
+	}
+
+	// Unmute target
+	reqUnmute := httptest.NewRequest(http.MethodPost, "/api/v1/targets/db-mute-test/unmute", nil)
+	recUnmute := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recUnmute, reqUnmute)
+
+	if recUnmute.Code != http.StatusOK {
+		t.Fatalf("Unmute target code = %d, want 200", recUnmute.Code)
+	}
+
+	targets = s.store.GetTargets()
+	if targets[0].Muted || targets[0].Status != StatusHealthy {
+		t.Fatalf("expected target to be unmuted with StatusHealthy, got %+v", targets[0])
+	}
+}
+
+func TestExportCSV(t *testing.T) {
+	s := New(Config{DemoMode: true})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/export/csv", nil)
+	rec := httptest.NewRecorder()
+
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export csv code = %d, want 200", rec.Code)
+	}
+
+	contentType := rec.Header().Get("Content-Type")
+	if !strings.HasPrefix(contentType, "text/csv") {
+		t.Errorf("content-type = %s, want text/csv", contentType)
+	}
+
+	body := rec.Body.String()
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected header + at least 1 row in CSV, got: %s", body)
+	}
+
+	// First line should be header
+	if !strings.Contains(lines[0], "Target,DrilledAt,Passed") {
+		t.Errorf("header = %s, missing required columns", lines[0])
+	}
+}

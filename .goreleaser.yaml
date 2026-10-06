@@ -37,7 +37,7 @@ builds:
 
 archives:
   - id: lazarus
-    builds:
+    ids:
       - lazarus
     formats: [tar.gz]
     name_template: >-
@@ -51,7 +51,7 @@ archives:
       - lazarus.example.yml
 
   - id: lazarus-server
-    builds:
+    ids:
       - lazarus-server
     formats: [tar.gz]
     name_template: >-

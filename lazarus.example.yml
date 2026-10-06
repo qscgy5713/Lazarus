@@ -39,11 +39,16 @@ targets:
   - name: production-postgres
     engine: postgres
 
-    # Only needed when the backup doesn't already live on this machine —
-    # most real backups are in S3, on a dedicated backup host, etc. Runs
-    # through a shell before `path` below is looked at; use whatever tool
-    # already fetches this backup elsewhere. A non-zero exit fails the
-    # target before path is even checked. See "遠端備份來源" in the README.
+    # Option A: Native S3 / Cloudflare R2 / MinIO pull (No aws-cli needed!)
+    # s3:
+    #   bucket: my-backups
+    #   key: postgres/shop-latest.sql.gz
+    #   region: us-east-1                  # default: us-east-1
+    #   endpoint: ""                       # e.g. https://<account>.r2.cloudflarestorage.com or http://minio:9000
+    #   access_key_id: ""                  # optional, falls back to AWS_ACCESS_KEY_ID env
+    #   secret_access_key: ""              # optional, falls back to AWS_SECRET_ACCESS_KEY env
+    #
+    # Option B: Shell fetch command (aws s3 cp, rclone, scp, ...)
     # fetch_command: aws s3 cp s3://my-backups/postgres/shop-latest.sql.gz /backups/postgres/shop-latest.sql.gz
     # fetch_timeout: 5m   # defaults to 5m when fetch_command is set
 

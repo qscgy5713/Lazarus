@@ -136,7 +136,23 @@ type Target struct {
 	// establishes the baseline; there's nothing yet to compare against.
 	SizeDrift *SizeDrift `yaml:"size_drift"`
 
+	// S3, if set, pulls the backup file directly from an S3-compatible bucket
+	// (AWS S3, Cloudflare R2, MinIO, etc.) to Path before verification.
+	S3 *S3Config `yaml:"s3"`
+
 	Checks []Check `yaml:"checks"`
+}
+
+// S3Config configures direct backup retrieval from AWS S3, Cloudflare R2,
+// MinIO, or other S3-compatible object storage without external CLI dependencies.
+type S3Config struct {
+	Bucket          string `yaml:"bucket"`
+	Key             string `yaml:"key"`
+	Endpoint        string `yaml:"endpoint"`          // optional: custom endpoint URL for MinIO, R2, etc.
+	Region          string `yaml:"region"`            // optional: defaults to "us-east-1"
+	AccessKeyID     string `yaml:"access_key_id"`     // optional: falls back to AWS_ACCESS_KEY_ID env
+	SecretAccessKey string `yaml:"secret_access_key"` // optional: falls back to AWS_SECRET_ACCESS_KEY env
+	SessionToken    string `yaml:"session_token"`     // optional: falls back to AWS_SESSION_TOKEN env
 }
 
 // SizeDrift configures the backup-shrank-suspiciously check.
@@ -224,6 +240,27 @@ func (c *Config) applyDefaultsAndValidate() error {
 
 		if t.FetchCommand != "" && t.FetchTimeout <= 0 {
 			t.FetchTimeout = defaultFetchTimeout
+		}
+
+		if t.S3 != nil {
+			if t.S3.Bucket == "" {
+				return fmt.Errorf("target %q: s3.bucket is required", t.Name)
+			}
+			if t.S3.Key == "" {
+				return fmt.Errorf("target %q: s3.key is required", t.Name)
+			}
+			if t.S3.Region == "" {
+				t.S3.Region = "us-east-1"
+			}
+			if t.S3.AccessKeyID == "" {
+				t.S3.AccessKeyID = os.Getenv("AWS_ACCESS_KEY_ID")
+			}
+			if t.S3.SecretAccessKey == "" {
+				t.S3.SecretAccessKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
+			}
+			if t.S3.SessionToken == "" {
+				t.S3.SessionToken = os.Getenv("AWS_SESSION_TOKEN")
+			}
 		}
 
 		switch t.Engine {

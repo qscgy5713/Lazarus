@@ -240,7 +240,29 @@ size_drift:
 
 ### 遠端備份來源
 
-`path` 只認本機路徑——但大部分正式環境的備份根本不會放在跑 Lazarus 的這台機器上，通常是丟在 S3、專門的備份主機，或其他地方。`fetch_command` 讓你在 `path` 被查找之前，先跑一段 shell 指令把備份抓到本機：
+`path` 預設查找本機路徑——但大部分正式環境的備份根本不會放在跑 Lazarus 的這台機器上，通常是丟在 S3、專門的備份主機，或其他地方。Lazarus 提供兩種方式抓取遠端備份：
+
+#### 方式一：原生 S3 / Cloudflare R2 / MinIO 物件儲存（免安裝 aws-cli）
+
+Lazarus 內建純 Go AWS SigV4 認證客戶端，無須在主機或容器內預先安裝 `aws-cli` 或 Python 環境：
+
+```yaml
+targets:
+  - name: production-postgres
+    engine: postgres
+    path: /backups/postgres/shop-latest.sql.gz
+    s3:
+      bucket: my-backups
+      key: postgres/shop-latest.sql.gz
+      region: us-east-1                  # 預設 us-east-1
+      # endpoint: https://<account>.r2.cloudflarestorage.com  # Cloudflare R2 或 MinIO 請指定 endpoint
+      # access_key_id: "..."             # 亦可透過環境變數 AWS_ACCESS_KEY_ID 注入
+      # secret_access_key: "..."         # 亦可透過環境變數 AWS_SECRET_ACCESS_KEY 注入
+```
+
+#### 方式二：自訂 Shell 指令（`fetch_command`）
+
+`fetch_command` 讓你在 `path` 被查找之前，先跑一段 shell 指令把備份抓到本機：
 
 ```yaml
 fetch_command: aws s3 cp s3://my-backups/postgres/shop-latest.sql.gz /backups/postgres/shop-latest.sql.gz
@@ -251,7 +273,7 @@ fetch_timeout: 5m   # 預設 5 分鐘，避免抓取卡住讓 cron 無限等下�
 
 抓取需要的認證（AWS 憑證、SSH key 等）要讓執行 Lazarus 的那個行程本身拿得到——注意 cron 通常不會載入你 shell 的環境變數，需要另外設定。
 
-不設定 `fetch_command` 的目標行為完全不變，`path` 直接當本機路徑查找。
+不設定 `fetch_command` 或 `s3` 的目標行為完全不變，`path` 直接當本機路徑查找。
 
 ## 支援的備份格式
 
@@ -463,10 +485,12 @@ docker compose run --rm --entrypoint sh \
 
 ### 核心功能
 
-- **全時態健康儀表板 (Health Overview)**：直觀掌握各資料庫目標最新狀態（`PASS` / `FAIL` / `OVERDUE`）、備份大小變化趨勢與還原耗時。
-- **Dead Man's Snitch（逾期靜默失效偵測）**：傳統監控只在腳本報錯時發出警報，但如果 crontab 被誤刪、伺服器離線或備份腳本死當，監控系統根本收不到任何通知。Control Plane 在目標超過預期時間（預設 26 小時）未收到還原報告時，自動標記為 `OVERDUE` 並亮起警報。
+- **全時態健康儀表板 (Health Overview)**：直觀掌握各資料庫目標最新狀態（`PASS` / `FAIL` / `OVERDUE` / `MUTED`）、備份大小變化趨勢與還原耗時。
+- **維護模式與警報靜音 (Mute Alerts)**：當資料庫進行排程升級或停機維護時，可於 Web UI 或透過 API (`POST /api/v1/targets/{name}/mute`) 將目標一鍵切換為維護靜音模式，避免觸發誤報，並即時於狀態卡片與 Prometheus 指標同步。
+- **歷史演練審計清單一鍵匯出 CSV (`/api/v1/export/csv`)**：提供歷史還原演練紀錄的 CSV 格式一鍵下載，包含演練時間戳、資料庫名稱、還原耗時、各項 checks 驗證筆數與斷言結果，便於合規存檔與稽核檢驗。
+- **Dead Man's Snitch（逾期靜默失效偵測）**：傳統監控只在腳本報錯時發出警報，但如果 crontab 被誤刪、伺服器離線或備份腳本死當，監控系統根本收不到任何通知。Control Plane 在目標超過預期時間（預設 26 小時）未收到還原報告時，自動標記為 `OVERDUE` 並亮起警報（處於維護靜音中的目標除外）。
 - **合規稽核證明一鍵產生 (Audit Proof)**：內建合規報告匯出功能，將歷史還原紀錄整合成具時間戳記與資料筆數校驗的災難復原演練報告，直接提供給 SOC 2 Type II、ISO 27001 或金融監管稽核人員。
-- **Prometheus 指標暴露 (`/metrics`)**：原生暴露標準 Prometheus Exporter 端點，包含各目標還原耗時 (`lazarus_target_restore_duration_seconds`)、健康狀態 (`lazarus_target_status`) 與統計指標，無縫接入 Grafana 與 Alertmanager。
+- **Prometheus 指標暴露 (`/metrics`)**：原生暴露標準 Prometheus Exporter 端點，包含各目標還原耗時 (`lazarus_target_restore_duration_seconds`)、健康狀態 (`lazarus_target_status`，含 muted=3) 與統計指標，無縫接入 Grafana 與 Alertmanager。
 - **純 Go 輕量單一執行檔**：無需額外架設 PostgreSQL/MySQL 或 Redis，自帶內嵌 Web 介面與持久化狀態，資源消耗低於 20MB RAM。
 
 ### 獨立執行檔啟動

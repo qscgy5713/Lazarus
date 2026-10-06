@@ -3,6 +3,8 @@ package verify
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -583,5 +585,40 @@ func TestRunAllTreatsNonPositiveParallelismAsOne(t *testing.T) {
 		if len(results) != 1 || !results[0].Passed {
 			t.Errorf("RunAll with parallelism=%d = %+v, want a single passing result", p, results)
 		}
+	}
+}
+
+func TestRun_S3Download(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+	sourceDB := sqliteBackup(t, dir, "source.db", 5)
+	dbData, err := os.ReadFile(sourceDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	destPath := filepath.Join(dir, "pulled.db")
+
+	// Mock S3 server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(dbData)
+	}))
+	defer server.Close()
+
+	target := config.Target{
+		Name:   "s3-sqlite",
+		Engine: config.EngineSQLite,
+		Path:   destPath,
+		S3: &config.S3Config{
+			Bucket:   "my-bucket",
+			Key:      "backups/db.sqlite",
+			Endpoint: server.URL,
+		},
+	}
+
+	res := Run(context.Background(), target, 0, false, false, "")
+	if !res.Passed {
+		t.Fatalf("expected target to pass, got err: %v", res.Err)
 	}
 }

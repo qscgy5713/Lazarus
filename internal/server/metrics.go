@@ -19,9 +19,10 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&buf, "lazarus_targets_total{status=\"healthy\"} %d\n", summary.Healthy)
 	fmt.Fprintf(&buf, "lazarus_targets_total{status=\"failed\"} %d\n", summary.Failed)
 	fmt.Fprintf(&buf, "lazarus_targets_total{status=\"overdue\"} %d\n", summary.Overdue)
+	fmt.Fprintf(&buf, "lazarus_targets_total{status=\"muted\"} %d\n", summary.Muted)
 
-	// 2. Target status gauge (1 = healthy, 0 = failed, 2 = overdue)
-	buf.WriteString("\n# HELP lazarus_target_status Health status of each target (1=healthy, 0=failed, 2=overdue).\n")
+	// 2. Target status gauge (1 = healthy, 0 = failed, 2 = overdue, 3 = muted)
+	buf.WriteString("\n# HELP lazarus_target_status Health status of each target (1=healthy, 0=failed, 2=overdue, 3=muted).\n")
 	buf.WriteString("# TYPE lazarus_target_status gauge\n")
 	for _, t := range targets {
 		var statusVal int
@@ -32,6 +33,8 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			statusVal = 0
 		case StatusOverdue:
 			statusVal = 2
+		case StatusMuted:
+			statusVal = 3
 		}
 		fmt.Fprintf(&buf, "lazarus_target_status{target=%q} %d\n", t.Name, statusVal)
 	}
