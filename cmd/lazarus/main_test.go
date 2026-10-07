@@ -25,16 +25,19 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(tmpDir)
-
+	// os.Exit skips deferred calls, so the temp dir is removed explicitly;
+	// a defer here leaked one compiled binary per test run.
 	lazarusBin = filepath.Join(tmpDir, "lazarus")
 	build := exec.Command("go", "build", "-o", lazarusBin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "build lazarus: %v: %s\n", err, out)
+		_ = os.RemoveAll(tmpDir)
 		os.Exit(1)
 	}
 
-	os.Exit(m.Run())
+	code := m.Run()
+	_ = os.RemoveAll(tmpDir)
+	os.Exit(code)
 }
 
 func writeConfig(t *testing.T, body string) string {
