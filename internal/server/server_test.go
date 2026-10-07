@@ -21,6 +21,37 @@ func TestHealthz(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
+
+	var data map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &data); err != nil {
+		t.Fatalf("failed to parse healthz json: %v", err)
+	}
+	if data["status"] != "ok" {
+		t.Errorf("status = %v, want 'ok'", data["status"])
+	}
+	if _, ok := data["uptime_seconds"]; !ok {
+		t.Errorf("missing uptime_seconds in healthz response")
+	}
+}
+
+func TestReadyz(t *testing.T) {
+	s := New(Config{})
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &data); err != nil {
+		t.Fatalf("failed to parse readyz json: %v", err)
+	}
+	if data["status"] != "ready" {
+		t.Errorf("status = %v, want 'ready'", data["status"])
+	}
 }
 
 func TestDashboard(t *testing.T) {

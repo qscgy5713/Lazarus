@@ -32,6 +32,7 @@ type Server struct {
 	mux         *http.ServeMux
 	httpSrv     *http.Server
 	httpSrvMu   sync.Mutex
+	startTime   time.Time
 	alertMu     sync.Mutex
 	lastAlerted map[string]time.Time
 	alertStop   chan struct{}
@@ -56,6 +57,7 @@ func New(cfg Config) *Server {
 		cfg:         cfg,
 		store:       store,
 		mux:         http.NewServeMux(),
+		startTime:   time.Now(),
 		lastAlerted: make(map[string]time.Time),
 		alertStop:   make(chan struct{}),
 		alertDone:   make(chan struct{}),
@@ -109,6 +111,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
+	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
 	s.mux.HandleFunc("GET /", s.handleDashboard)
 	s.mux.HandleFunc("POST /api/v1/reports", s.handlePostReport)
@@ -144,9 +147,27 @@ func (s *Server) checkAuth(r *http.Request) bool {
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	summary := s.store.GetSummary()
+	uptime := time.Since(s.startTime).Round(time.Second).Seconds()
+
+	resp := map[string]any{
+		"status":          "ok",
+		"uptime_seconds":  uptime,
+		"targets_tracked": summary.TotalTargets,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"status":"ok"}`))
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	// Verify memory store is accessible
+	_ = s.store.GetSummary()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ready"}`))
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {

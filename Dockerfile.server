@@ -8,11 +8,16 @@ COPY . .
 RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /lazarus-server ./cmd/server
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata \
+    && addgroup -S -g 10001 lazarus \
+    && adduser -S -u 10001 -G lazarus -h /app lazarus \
+    && mkdir -p /data /app \
+    && chown -R lazarus:lazarus /data /app
 
 WORKDIR /app
 COPY --from=build /lazarus-server /usr/local/bin/lazarus-server
 
+USER lazarus
 EXPOSE 8080
 VOLUME ["/data"]
 
