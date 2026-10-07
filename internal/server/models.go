@@ -26,6 +26,7 @@ type InboundResult struct {
 	BackupAge         string         `json:"backup_age,omitempty"`
 	DurationMs        int64          `json:"duration_ms"`
 	RestoreDurationMs int64          `json:"restore_duration_ms,omitempty"`
+	SLARTOMs          int64          `json:"sla_rto_ms,omitempty"`
 	Checks            []InboundCheck `json:"checks,omitempty"`
 	DebugHint         string         `json:"debug_hint,omitempty"`
 	LogsTail          string         `json:"logs_tail,omitempty"`
@@ -67,7 +68,10 @@ type TargetRecord struct {
 	LastRestoreMs  int64           `json:"last_restore_ms"`
 	LastLogsTail   string          `json:"last_logs_tail,omitempty"`
 	SLARTO         string          `json:"sla_rto,omitempty"`
-	SLAPassed      bool            `json:"sla_passed,omitempty"`
+	SLARTOMs       int64           `json:"sla_rto_ms,omitempty"`
+	// SLAPassed is derived when targets are listed (never persisted as a
+	// stale verdict): healthy now AND last restore within the RTO, if set.
+	SLAPassed bool `json:"sla_passed"`
 	LastChecks     []InboundCheck  `json:"last_checks,omitempty"`
 	RecentHistory  []HistoryRecord `json:"recent_history,omitempty"`
 }

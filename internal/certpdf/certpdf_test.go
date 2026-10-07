@@ -13,11 +13,13 @@ func TestGeneratePDF(t *testing.T) {
 		GeneratedAt:   time.Now().UTC(),
 		TotalTargets:  3,
 		PassedTargets: 3,
+		Eligible:      3,
 		SLAPercentage: 100.0,
 		Targets: []TargetAudit{
 			{
 				Name:            "prod-postgres",
 				Passed:          true,
+				Verdict:         "PASS",
 				Stage:           "done",
 				RestoreDuration: "1.2s",
 				BackupSize:      "120 MB",

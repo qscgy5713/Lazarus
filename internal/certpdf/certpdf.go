@@ -12,8 +12,11 @@ import (
 
 // TargetAudit summarizes one target for the certificate.
 type TargetAudit struct {
-	Name            string
-	Passed          bool
+	Name   string
+	Passed bool
+	// Verdict is the label printed in the table: PASS, FAIL, SLA MISS,
+	// OVERDUE or MUTED. Empty falls back to PASS/FAIL from Passed.
+	Verdict         string
 	Stage           string
 	RestoreDuration string
 	BackupSize      string
@@ -29,6 +32,9 @@ type CertificateData struct {
 	GeneratedAt   time.Time
 	TotalTargets  int
 	PassedTargets int
+	// Eligible is how many targets count toward the SLA rate (total minus
+	// muted ones in planned maintenance). Zero renders as NO DATA.
+	Eligible      int
 	SLAPercentage float64
 	Targets       []TargetAudit
 }
@@ -78,8 +84,13 @@ func Generate(data CertificateData) []byte {
 	fmt.Fprintf(&stream, "0.82 0.85 0.90 RG 1 w 50 595 512 60 re S\n")
 
 	statusWord := "COMPLIANT"
-	if data.PassedTargets < data.TotalTargets {
+	if data.TotalTargets == 0 || data.PassedTargets < data.TotalTargets || data.SLAPercentage < 100.0 {
 		statusWord = "NON-COMPLIANT"
+	}
+
+	slaText := "N/A"
+	if data.Eligible > 0 {
+		slaText = fmt.Sprintf("%.1f%%", data.SLAPercentage)
 	}
 
 	fmt.Fprintf(&stream, "BT\n")
@@ -90,7 +101,7 @@ func Generate(data CertificateData) []byte {
 	fmt.Fprintf(&stream, "/F2 16 Tf 0.15 0.55 0.25 rg 180 610 Td (%s) Tj\n", escapePDF(fmt.Sprintf("%d", data.PassedTargets)))
 
 	fmt.Fprintf(&stream, "/F2 10 Tf 0.2 0.25 0.3 rg 310 635 Td (%s) Tj\n", escapePDF("SLA COMPLIANCE RATE"))
-	fmt.Fprintf(&stream, "/F2 16 Tf 0.1 0.2 0.4 rg 310 610 Td (%s) Tj\n", escapePDF(fmt.Sprintf("%.1f%%", data.SLAPercentage)))
+	fmt.Fprintf(&stream, "/F2 16 Tf 0.1 0.2 0.4 rg 310 610 Td (%s) Tj\n", escapePDF(slaText))
 
 	fmt.Fprintf(&stream, "/F2 10 Tf 0.2 0.25 0.3 rg 450 635 Td (%s) Tj\n", escapePDF("AUDIT STATUS"))
 	if statusWord == "COMPLIANT" {
@@ -128,9 +139,13 @@ func Generate(data CertificateData) []byte {
 		}
 		fmt.Fprintf(&stream, "0.90 0.92 0.94 RG 0.5 w 50 %d 512 16 re S\n", y-2)
 
-		targetStatus := "PASS"
-		if !t.Passed {
-			targetStatus = "FAIL"
+		targetStatus := t.Verdict
+		if targetStatus == "" {
+			if t.Passed {
+				targetStatus = "PASS"
+			} else {
+				targetStatus = "FAIL"
+			}
 		}
 		checksStr := fmt.Sprintf("%d/%d", t.ChecksPassed, t.ChecksTotal)
 		if t.ChecksTotal == 0 {
@@ -140,9 +155,14 @@ func Generate(data CertificateData) []byte {
 		fmt.Fprintf(&stream, "BT\n")
 		fmt.Fprintf(&stream, "/F2 8 Tf 0.2 0.2 0.25 rg 60 %d Td (%s) Tj\n", y+2, escapePDF(truncateStr(t.Name, 22)))
 
-		if t.Passed {
+		switch targetStatus {
+		case "PASS":
 			fmt.Fprintf(&stream, "/F2 8 Tf 0.15 0.55 0.25 rg 170 %d Td (%s) Tj\n", y+2, escapePDF(targetStatus))
-		} else {
+		case "MUTED":
+			fmt.Fprintf(&stream, "/F2 8 Tf 0.5 0.5 0.5 rg 170 %d Td (%s) Tj\n", y+2, escapePDF(targetStatus))
+		case "SLA MISS", "OVERDUE":
+			fmt.Fprintf(&stream, "/F2 8 Tf 0.85 0.45 0.1 rg 170 %d Td (%s) Tj\n", y+2, escapePDF(targetStatus))
+		default: // FAIL
 			fmt.Fprintf(&stream, "/F2 8 Tf 0.75 0.15 0.15 rg 170 %d Td (%s) Tj\n", y+2, escapePDF(targetStatus))
 		}
 

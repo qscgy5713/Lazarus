@@ -79,6 +79,11 @@ func (s *Store) RecordReport(report InboundReport) {
 		rec.LastRestoreMs = res.RestoreDurationMs
 		rec.LastChecks = res.Checks
 		rec.LastLogsTail = res.LogsTail
+		rec.SLARTOMs = res.SLARTOMs
+		rec.SLARTO = ""
+		if res.SLARTOMs > 0 {
+			rec.SLARTO = (time.Duration(res.SLARTOMs) * time.Millisecond).String()
+		}
 
 		if res.Passed {
 			rec.Status = StatusHealthy
@@ -180,6 +185,11 @@ func (s *Store) GetTargetsFiltered(tagFilter string) []*TargetRecord {
 			// Dead Man's Snitch check: if older than threshold, mark as Overdue
 			cloned.Status = StatusOverdue
 		}
+		// SLA compliance: still healthy (not failed/overdue) and, when an RTO
+		// is configured, the last restore finished within it. Derived here so
+		// it also holds for records persisted before sla_rto existed.
+		cloned.SLAPassed = cloned.Status == StatusHealthy &&
+			(cloned.SLARTOMs <= 0 || cloned.LastRestoreMs <= cloned.SLARTOMs)
 		out = append(out, &cloned)
 	}
 
@@ -198,6 +208,7 @@ func (s *Store) GetSummary() Summary {
 	targets := s.GetTargets()
 	var sum Summary
 	sum.TotalTargets = len(targets)
+	slaPassed := 0
 	for _, t := range targets {
 		switch t.Status {
 		case StatusHealthy:
@@ -209,9 +220,14 @@ func (s *Store) GetSummary() Summary {
 		case StatusMuted:
 			sum.Muted++
 		}
+		if t.SLAPassed {
+			slaPassed++
+		}
 	}
-	if sum.TotalTargets > 0 {
-		sum.SLAPercentage = float64(sum.Healthy) / float64(sum.TotalTargets) * 100.0
+	// Muted targets are in planned maintenance, so they're left out of the
+	// denominator rather than counted as SLA misses.
+	if eligible := sum.TotalTargets - sum.Muted; eligible > 0 {
+		sum.SLAPercentage = float64(slaPassed) / float64(eligible) * 100.0
 	}
 	return sum
 }

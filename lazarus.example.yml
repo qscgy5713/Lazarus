@@ -46,6 +46,10 @@ notify:
   #     - dba-oncall@example.com
   #     - reliability-team@example.com
 
+  # Optional Control Plane URL for link buttons in Slack and Teams alerts.
+  # When set, notification messages will include a "View Dashboard" button.
+  # dashboard_url: "https://control-plane.internal:8080"
+
 targets:
   - name: production-postgres
     engine: postgres

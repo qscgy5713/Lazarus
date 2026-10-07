@@ -165,6 +165,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, targets []config.Target,
 func sendNotification(ctx context.Context, cfg config.Notify, results []verify.Result) {
 	notifier := notify.New(cfg.WebhookURL, notify.Format(cfg.Format), notify.When(cfg.When)).
 		WithAPIKey(cfg.APIKey).
+		WithDashboardURL(cfg.DashboardURL).
 		WithSMTP(cfg.SMTP)
 	if !notifier.ShouldSend(results) {
 		return

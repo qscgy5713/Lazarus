@@ -77,6 +77,11 @@ type Notify struct {
 
 	// SMTP configures direct email delivery when format is "email".
 	SMTP *SMTPConfig `yaml:"smtp"`
+
+	// DashboardURL is the Control Plane address linked from Slack/Teams
+	// alerts. Leave empty to omit the link button: guessing a default would
+	// ship a dead link (e.g. localhost) to whoever reads the alert.
+	DashboardURL string `yaml:"dashboard_url"`
 }
 
 // SMTPConfig configures email delivery via SMTP.

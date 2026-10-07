@@ -453,11 +453,10 @@ Webhook URL 建議用環境變數給，不要寫進設定檔：
 LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx ./lazarus --config lazarus.yml
 ```
 
-通知原生支援各平台的富文本排版，且在遭遇網路瞬斷或伺服器 5xx 錯誤時**自動進行 3 次指數退避重試**：
-- **Slack (Block Kit)**：具備標題 Header、狀態區塊與 Markdown 錯誤碼塊。
+- **Slack (Block Kit)**：具備標題 Header、狀態區塊與 Markdown 錯誤碼塊；當失敗且容器有輸出時自動附帶末尾 Stderr 日誌。設定 `dashboard_url` 時會自動加入「🌐 View Dashboard」按鈕導向控制台。
 - **Discord (Rich Embeds)**：通過時顯示綠色邊框 (`#2ecc71`)，失敗時顯示紅色邊框 (`#e74c3c`)，並逐條列出每個目標的還原耗時與錯誤階段。
 - **Telegram Bot**：原生 HTML 格式卡片，具備專屬狀態 Header 與 `<pre>` 等寬代碼區塊。
-- **Microsoft Teams**：MessageCard / Adaptive Card 格式，支援色彩飾條（綠/紅）與 Markdown 清單。
+- **Microsoft Teams**：MessageCard / Adaptive Card 格式，支援色彩飾條（綠/紅）與 Markdown 清單；設定 `dashboard_url` 時附帶「🌐 View Dashboard」操作連結。
 - **PagerDuty (Events API v2)**：演練失敗時觸發 `critical` Incident，全部通過時可發送 `info` 狀態。
 - **原生 Email (SMTP)**：發送響應式美觀 HTML 晨報/演練報告，自帶目標狀態卡片、標籤徽章、檢查項目統計與錯誤診斷 Hint。支援標準 SMTP 驗證與自訂寄件者/收件者清單。
 
@@ -636,7 +635,7 @@ docker compose run --rm --entrypoint sh \
 - **RTO 還原耗時歷史趨勢圖 (Historical RTO Sparkline)**：在各目標卡片內建純 SVG 輕量趨勢曲線圖，即時呈現過去數次演練之還原耗時波動與成功/失敗節點。
 - **維護模式與警報靜音 (Mute Alerts)**：當資料庫進行排程升級或停機維護時，可於 Web UI 或透過 API (`POST /api/v1/targets/{name}/mute`) 將目標一鍵切換為維護靜音模式，避免觸發誤報，並即時於狀態卡片與 Prometheus 指標同步。
 - **歷史演練審計清單一鍵匯出 CSV (`/api/v1/export/csv`)**：提供歷史還原演練紀錄的 CSV 格式一鍵下載，包含演練時間戳、標籤、資料庫名稱、還原耗時、各項 checks 驗證筆數與斷言結果，支援 `?tag=` 篩選匯出，便於合規存檔與稽核檢驗。
-- **企業合規審計原生 PDF 證書匯出 (`/api/v1/export/certificate.pdf`)**：純 Go 原生產出符合 PDF 1.4 標準的正式災難復原演練證書，具備動態 SHA-256 防篡改數位簽章、SLA 達標率分析與各資料庫目標完整驗證軌跡，符合 SOC 2、ISO 27001 與 HIPAA 合規審計要求。
+- **企業合規審計原生 PDF 證書匯出 (`/api/v1/export/certificate.pdf`)**：純 Go 原生產出符合 PDF 1.4 標準的正式災難復原演練證書，具備動態 SHA-256 防篡改數位簽章與完整演練軌跡。SLA 達標率嚴格檢驗目標是否健康且還原耗時在 `sla_rto` 承諾之內（維護中的 Muted 目標自動排除於分母），符合 SOC 2、ISO 27001 與 HIPAA 合規審計要求。
 - **容器失敗日誌回溯 (Container Stderr Tail)**：演練失敗時自動提取容器末 50 行 Stderr 日誌，直接呈現於 Web UI 終端機抽屜與 Slack/Teams 告警訊息中，無需手動 SSH 進主機即可一眼掌握崩潰原因。
 - **Dead Man's Snitch（逾期靜默失效偵測）**：傳統監控只在腳本報錯時發出警報，但如果 crontab 被誤刪、伺服器離線或備份腳本死當，監控系統根本收不到任何通知。Control Plane 在目標超過預期時間（預設 26 小時）未收到還原報告時，自動標記為 `OVERDUE` 並亮起警報（處於維護靜音中的目標除外）。
 - **合規稽核證明一鍵產生 (Audit Proof)**：內建合規報告匯出功能，將歷史還原紀錄整合成具時間戳記與資料筆數校驗的災難復原演練報告，直接提供給 SOC 2 Type II、ISO 27001 或金融監管稽核人員。

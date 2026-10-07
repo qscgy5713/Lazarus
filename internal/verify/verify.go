@@ -51,6 +51,11 @@ type Result struct {
 	Duration        time.Duration
 	RestoreDuration time.Duration
 
+	// SLARTO is the target's configured recovery-time objective, carried on
+	// the result so downstream reports can judge SLA compliance without the
+	// original config. Zero means no SLA was configured.
+	SLARTO time.Duration
+
 	// LogsTail contains the trailing logs from the container if failure occurred.
 	LogsTail string
 
@@ -74,7 +79,7 @@ type Result struct {
 // GPG-encrypted; ignored for a target whose backup isn't.
 func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline bool, keepOnFailure bool, gpgPassphrase string) (result Result) {
 	started := time.Now()
-	result = Result{Target: target.Name, Tags: target.Tags, Stage: StageFetch}
+	result = Result{Target: target.Name, Tags: target.Tags, Stage: StageFetch, SLARTO: target.SLARTO}
 	// A named return value, not a "finish() Result" helper returning a plain
 	// copy: the keep-on-failure defers below mutate result.DebugHint after
 	// deciding whether to tear down the sandbox, and only a named return

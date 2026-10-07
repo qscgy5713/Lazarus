@@ -359,9 +359,21 @@ func (s *Server) handleExportPDF(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		verdict := "PASS"
+		if t.Status == StatusMuted {
+			verdict = "MUTED"
+		} else if t.Status == StatusOverdue {
+			verdict = "OVERDUE"
+		} else if !t.LastPassed {
+			verdict = "FAIL"
+		} else if !t.SLAPassed {
+			verdict = "SLA MISS"
+		}
+
 		targetAudits = append(targetAudits, certpdf.TargetAudit{
 			Name:            t.Name,
 			Passed:          t.LastPassed,
+			Verdict:         verdict,
 			Stage:           t.LastStage,
 			RestoreDuration: restoreDurationStr,
 			BackupSize:      backupSizeStr,
@@ -377,11 +389,13 @@ func (s *Server) handleExportPDF(w http.ResponseWriter, r *http.Request) {
 		host = targets[0].LastHostname
 	}
 
+	eligible := summary.TotalTargets - summary.Muted
 	certData := certpdf.CertificateData{
 		Hostname:      host,
 		GeneratedAt:   time.Now().UTC(),
 		TotalTargets:  summary.TotalTargets,
 		PassedTargets: summary.Healthy,
+		Eligible:      eligible,
 		SLAPercentage: summary.SLAPercentage,
 		Targets:       targetAudits,
 	}

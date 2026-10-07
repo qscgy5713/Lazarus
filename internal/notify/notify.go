@@ -53,13 +53,14 @@ const (
 const maxMessageLen = 2000
 
 type Notifier struct {
-	url        string
-	format     Format
-	when       When
-	apiKey     string
-	client     *http.Client
-	smtp       *config.SMTPConfig
-	smtpSender func(addr string, a smtp.Auth, from string, to []string, msg []byte) error
+	url          string
+	format       Format
+	when         When
+	apiKey       string
+	dashboardURL string
+	client       *http.Client
+	smtp         *config.SMTPConfig
+	smtpSender   func(addr string, a smtp.Auth, from string, to []string, msg []byte) error
 }
 
 func New(url string, format Format, when When) *Notifier {
@@ -76,6 +77,15 @@ func New(url string, format Format, when When) *Notifier {
 func (n *Notifier) WithAPIKey(key string) *Notifier {
 	if n != nil {
 		n.apiKey = key
+	}
+	return n
+}
+
+// WithDashboardURL sets the Control Plane link shown as a button in Slack and
+// Teams alerts. Empty means no button.
+func (n *Notifier) WithDashboardURL(u string) *Notifier {
+	if n != nil {
+		n.dashboardURL = strings.TrimSpace(u)
 	}
 	return n
 }
@@ -170,13 +180,13 @@ func (n *Notifier) buildPayload(results []verify.Result) ([]byte, error) {
 	case FormatTelegram:
 		return json.Marshal(n.buildTelegram(results))
 	case FormatTeams:
-		return json.Marshal(buildTeams(results))
+		return json.Marshal(buildTeams(results, n.dashboardURL))
 	case FormatPagerDuty:
 		return json.Marshal(n.buildPagerDuty(results))
 	case FormatGeneric, FormatLazarus:
 		return json.Marshal(buildGeneric(results))
 	default: // Slack, and anything Slack-compatible (Mattermost, etc.)
-		return json.Marshal(buildSlack(results))
+		return json.Marshal(buildSlack(results, n.dashboardURL))
 	}
 }
 
@@ -264,7 +274,7 @@ type slackTextObj struct {
 	Text string `json:"text"`
 }
 
-func buildSlack(results []verify.Result) slackPayload {
+func buildSlack(results []verify.Result, dashboardURL string) slackPayload {
 	summaryText := FormatMessage(results)
 	failed := anyFailed(results)
 
@@ -296,22 +306,39 @@ func buildSlack(results []verify.Result) slackPayload {
 		}
 	}
 
-	blocks = append(blocks, slackBlock{
-		Type: "actions",
-		Elements: []slackElement{
-			{
-				Type:  "button",
-				Text:  &slackTextObj{Type: "plain_text", Text: "⚡ View Drills"},
-				URL:   "http://localhost:8080",
-				Style: "primary",
+	if link := validDashboardURL(dashboardURL); link != "" {
+		blocks = append(blocks, slackBlock{
+			Type: "actions",
+			Elements: []slackElement{
+				{
+					Type:  "button",
+					Text:  &slackTextObj{Type: "plain_text", Text: "🌐 View Dashboard"},
+					URL:   link,
+					Style: "primary",
+				},
 			},
-		},
-	})
+		})
+	}
 
 	return slackPayload{
 		Text:   summaryText,
 		Blocks: blocks,
 	}
+}
+
+// validDashboardURL returns u when it is an absolute http(s) URL, else "".
+// Slack rejects an entire message over a malformed button URL, so a bad
+// value must drop the button rather than lose the alert.
+func validDashboardURL(u string) string {
+	u = strings.TrimSpace(u)
+	if u == "" {
+		return ""
+	}
+	parsed, err := url.Parse(u)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return ""
+	}
+	return u
 }
 
 type discordPayload struct {
@@ -394,6 +421,7 @@ type genericResult struct {
 	BackupAge         string         `json:"backup_age,omitempty"`
 	DurationMs        int64          `json:"duration_ms"`
 	RestoreDurationMs int64          `json:"restore_duration_ms,omitempty"`
+	SLARTOMs          int64          `json:"sla_rto_ms,omitempty"`
 	Checks            []genericCheck `json:"checks,omitempty"`
 	DebugHint         string         `json:"debug_hint,omitempty"`
 	LogsTail          string         `json:"logs_tail,omitempty"`
@@ -423,6 +451,7 @@ func buildGeneric(results []verify.Result) genericPayload {
 			Stage:             string(r.Stage),
 			DurationMs:        r.Duration.Milliseconds(),
 			RestoreDurationMs: r.RestoreDuration.Milliseconds(),
+			SLARTOMs:          r.SLARTO.Milliseconds(),
 			DebugHint:         r.DebugHint,
 			LogsTail:          r.LogsTail,
 		}
@@ -503,7 +532,7 @@ type teamsSection struct {
 	Text          string `json:"text"`
 }
 
-func buildTeams(results []verify.Result) teamsPayload {
+func buildTeams(results []verify.Result, dashboardURL string) teamsPayload {
 	failed := anyFailed(results)
 	themeColor := "2ecc71" // green
 	title := "✅ Lazarus: All Restorations Passed"
@@ -529,14 +558,17 @@ func buildTeams(results []verify.Result) teamsPayload {
 		}
 	}
 
-	actions := []teamsAction{
-		{
-			Type: "OpenURI",
-			Name: "⚡ Open Control Plane",
-			Targets: []teamsActionTarget{
-				{OS: "default", URI: "http://localhost:8080"},
+	var actions []teamsAction
+	if link := validDashboardURL(dashboardURL); link != "" {
+		actions = []teamsAction{
+			{
+				Type: "OpenUri",
+				Name: "🌐 View Dashboard",
+				Targets: []teamsActionTarget{
+					{OS: "default", URI: link},
+				},
 			},
-		},
+		}
 	}
 
 	return teamsPayload{

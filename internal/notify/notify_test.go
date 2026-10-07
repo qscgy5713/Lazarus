@@ -578,3 +578,49 @@ func TestSendEmailFailureReport(t *testing.T) {
 		t.Errorf("email body missing debug hint")
 	}
 }
+
+func TestDashboardURLButtons(t *testing.T) {
+	results := []verify.Result{passing("test-db")}
+
+	// Without dashboard URL: no actions block in Slack, no potentialAction in Teams
+	slackNoBtn := buildSlack(results, "")
+	for _, b := range slackNoBtn.Blocks {
+		if b.Type == "actions" {
+			t.Errorf("expected no actions block without dashboard URL in Slack, got %+v", b)
+		}
+	}
+	teamsNoBtn := buildTeams(results, "")
+	if len(teamsNoBtn.PotentialAction) != 0 {
+		t.Errorf("expected no potentialAction without dashboard URL in Teams, got %+v", teamsNoBtn.PotentialAction)
+	}
+
+	// With invalid dashboard URL (e.g. malformed or relative): ignored
+	slackBadBtn := buildSlack(results, "not-a-valid-url")
+	for _, b := range slackBadBtn.Blocks {
+		if b.Type == "actions" {
+			t.Errorf("expected no actions block with invalid dashboard URL, got %+v", b)
+		}
+	}
+
+	// With valid dashboard URL: button rendered
+	dashURL := "https://lazarus.company.internal"
+	slackWithBtn := buildSlack(results, dashURL)
+	foundSlackBtn := false
+	for _, b := range slackWithBtn.Blocks {
+		if b.Type == "actions" {
+			for _, el := range b.Elements {
+				if el.Type == "button" && el.URL == dashURL {
+					foundSlackBtn = true
+				}
+			}
+		}
+	}
+	if !foundSlackBtn {
+		t.Errorf("expected dashboard link button in Slack payload with URL %q", dashURL)
+	}
+
+	teamsWithBtn := buildTeams(results, dashURL)
+	if len(teamsWithBtn.PotentialAction) != 1 || len(teamsWithBtn.PotentialAction[0].Targets) != 1 || teamsWithBtn.PotentialAction[0].Targets[0].URI != dashURL {
+		t.Errorf("expected dashboard OpenUri action in Teams payload with URI %q, got %+v", dashURL, teamsWithBtn.PotentialAction)
+	}
+}
