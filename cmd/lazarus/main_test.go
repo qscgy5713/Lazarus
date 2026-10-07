@@ -295,3 +295,26 @@ func TestVersionFlagPrintsVersionWithoutNeedingAConfigFile(t *testing.T) {
 		t.Errorf("stdout = %q, want it to mention lazarus", stdout)
 	}
 }
+
+func TestDryRunFlagWorksAsAlias(t *testing.T) {
+	configPath := writeConfig(t, `
+targets:
+  - name: test-dry-run
+    engine: postgres
+    path: /tmp/mock.sql
+    checks:
+      - name: has data
+        sql: SELECT count(*) FROM users
+        expect_min: 1
+`)
+	stdout, stderr, exitCode, err := runLazarus("--config", configPath, "--dry-run")
+	if err != nil {
+		t.Fatalf("run lazarus: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, "config OK") || !strings.Contains(stdout, "test-dry-run") {
+		t.Errorf("stdout = %q, want it to mention config OK and test-dry-run", stdout)
+	}
+}

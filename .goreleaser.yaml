@@ -49,6 +49,7 @@ archives:
       - README.md
       - LICENSE
       - lazarus.example.yml
+      - examples/**/*
 
   - id: lazarus-server
     ids:
@@ -62,6 +63,9 @@ archives:
     files:
       - README.md
       - LICENSE
+      - examples/grafana/*
+      - examples/systemd/lazarus-server.service
+      - examples/k8s/*
 
 checksum:
   name_template: "checksums.txt"

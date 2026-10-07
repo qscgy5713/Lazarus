@@ -32,6 +32,7 @@ func main() {
 	quiet := flag.Bool("quiet", false, "only print failing targets and the final tally (ignored with --json, which is already machine-readable)")
 	keepOnFailure := flag.Bool("keep-on-failure", false, "keep a failing target's sandbox container (or SQLite temp file) instead of tearing it down, for manual inspection")
 	checkConfig := flag.Bool("check-config", false, "validate the config file and exit, without fetching, restoring, or touching Docker")
+	dryRun := flag.Bool("dry-run", false, "alias for --check-config")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -55,7 +56,7 @@ func main() {
 		}
 	}
 
-	if *checkConfig {
+	if *checkConfig || *dryRun {
 		// config.Load already ran every syntax/logic check it has (unique
 		// names, valid engine, exactly-one check expectation, and so on) —
 		// getting this far at all means the config is valid. What's left is
