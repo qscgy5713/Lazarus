@@ -1,0 +1,67 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: lazarus-restore-drill
+  labels:
+    app.kubernetes.io/name: lazarus-runner
+spec:
+  # Run daily at 04:00 UTC
+  schedule: "0 4 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: lazarus-runner
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: lazarus
+              image: ghcr.io/qscgy5713/lazarus:latest
+              imagePullPolicy: IfNotPresent
+              args:
+                - "--config"
+                - "/etc/lazarus/lazarus.yml"
+              env:
+                - name: LAZARUS_WEBHOOK_URL
+                  value: "http://lazarus-server:8080/api/v1/reports"
+                - name: LAZARUS_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: lazarus-secret
+                      key: api-key
+                      optional: true
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-cloud-credentials
+                      key: aws-access-key-id
+                      optional: true
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-cloud-credentials
+                      key: aws-secret-access-key
+                      optional: true
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/lazarus
+                  readOnly: true
+                - name: docker-sock
+                  mountPath: /var/run/docker.sock
+                - name: state
+                  mountPath: /var/lib/lazarus
+          volumes:
+            - name: config
+              configMap:
+                name: lazarus-config
+            - name: docker-sock
+              hostPath:
+                path: /var/run/docker.sock
+                type: Socket
+            - name: state
+              persistentVolumeClaim:
+                claimName: lazarus-state-pvc

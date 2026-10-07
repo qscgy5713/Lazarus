@@ -1,5 +1,5 @@
 name: 'Lazarus Backup Restoration Verification'
-description: 'Automated database backup restoration drill runner for PostgreSQL, MySQL, and SQLite'
+description: 'Automated database backup restoration drill runner for PostgreSQL, MySQL, SQLite, and Redis'
 author: 'qscgy5713'
 
 branding:
@@ -53,11 +53,23 @@ runs:
           echo "Building Lazarus from source..."
           go build -o /usr/local/bin/lazarus "${{ github.action_path }}/cmd/lazarus"
         else
-          echo "Go not found, downloading latest Lazarus release..."
           ARCH="amd64"
+          case "$(uname -m)" in
+            aarch64|arm64) ARCH="arm64" ;;
+            x86_64|amd64)  ARCH="amd64" ;;
+          esac
+
           OS="linux"
           if [[ "$OSTYPE" == "darwin"* ]]; then OS="darwin"; fi
-          URL="https://github.com/qscgy5713/Lazarus/releases/latest/download/Lazarus_${OS}_${ARCH}.tar.gz"
+
+          VER="${{ inputs.version }}"
+          if [ -z "$VER" ] || [ "$VER" = "latest" ]; then
+            URL="https://github.com/qscgy5713/Lazarus/releases/latest/download/Lazarus_${OS}_${ARCH}.tar.gz"
+          else
+            URL="https://github.com/qscgy5713/Lazarus/releases/download/${VER}/Lazarus_${OS}_${ARCH}.tar.gz"
+          fi
+
+          echo "Downloading Lazarus binary from $URL..."
           curl -sSL "$URL" | tar -xz -C /usr/local/bin lazarus || true
         fi
 
