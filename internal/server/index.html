@@ -128,7 +128,7 @@
         </div>
         <div class="mt-3 flex items-baseline justify-between">
           <span id="statTotal" class="text-3xl font-extrabold text-white">0</span>
-          <span class="text-xs text-slate-500">Databases</span>
+          <span id="statTotalSubtitle" class="text-xs text-slate-500">Databases</span>
         </div>
       </div>
 
@@ -304,6 +304,13 @@
         </div>
       </div>
       <div class="flex items-center space-x-2">
+        <div class="relative">
+          <input id="drawerLogFilter" type="text" oninput="filterDrawerLogs()" placeholder="Filter logs..." class="w-36 sm:w-48 bg-slate-950/80 border border-slate-700/80 rounded px-2.5 py-1 text-xs text-slate-200 placeholder-slate-500 font-mono focus:outline-none focus:border-indigo-500 transition" />
+        </div>
+        <button onclick="downloadTerminalLogs()" class="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition flex items-center space-x-1" title="Download raw logs as text file">
+          <span>📥</span>
+          <span>Download</span>
+        </button>
         <button onclick="copyTerminalLogs()" class="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition flex items-center space-x-1">
           <span id="copyLogsIcon">📋</span>
           <span id="copyLogsText">Copy</span>
@@ -380,6 +387,7 @@
 
   <script>
     let globalTargets = [];
+    let globalSummary = null;
     let currentTag = '';
     let currentDrawerTarget = null;
     let currentDrawerRawLogs = '';
@@ -410,7 +418,7 @@
         const dailyMetrics = await dailyRes.json();
 
         globalTargets = targets;
-        renderSummary(summary);
+        globalSummary = summary;
         renderDailyCharts(dailyMetrics);
         renderTagFilterBar();
         applyTargetFilter();
@@ -546,6 +554,49 @@
       applyTargetFilter();
     }
 
+    function computeScopedSummary(targets, tagName) {
+      const total = targets.length;
+      let healthy = 0;
+      let failed = 0;
+      let overdue = 0;
+      let muted = 0;
+      let totalDrills = 0;
+      let totalRestoreMs = 0;
+      let restoreCount = 0;
+
+      targets.forEach(t => {
+        if (t.muted) muted++;
+        if (t.status === 'HEALTHY' || t.status === 'VERIFIED') healthy++;
+        else if (t.status === 'FAILED') failed++;
+        else if (t.status === 'OVERDUE') overdue++;
+
+        if (t.history && t.history.length > 0) {
+          totalDrills += t.history.length;
+          t.history.forEach(h => {
+            if (h.restore_ms && h.restore_ms > 0) {
+              totalRestoreMs += h.restore_ms;
+              restoreCount++;
+            }
+          });
+        }
+      });
+
+      const sla = total > 0 ? (healthy / total) * 100 : 100;
+      const avgRestore = restoreCount > 0 ? (totalRestoreMs / restoreCount) : 0;
+
+      return {
+        total_targets: total,
+        healthy: healthy,
+        failed: failed,
+        overdue: overdue,
+        muted: muted,
+        sla_percentage: sla,
+        avg_restore_ms: avgRestore,
+        total_drills_30d: totalDrills,
+        tag_scope: tagName
+      };
+    }
+
     function applyTargetFilter() {
       const q = (document.getElementById('targetFilterInput')?.value || '').toLowerCase().trim();
       let filtered = globalTargets || [];
@@ -562,10 +613,21 @@
         );
       }
       renderTargets(filtered, q || currentTag);
+
+      if (currentTag) {
+        renderSummary(computeScopedSummary(filtered, currentTag));
+      } else if (globalSummary) {
+        renderSummary(globalSummary);
+      }
     }
 
     function renderSummary(s) {
+      if (!s) return;
       document.getElementById('statTotal').innerText = s.total_targets || 0;
+      const subTitleEl = document.getElementById('statTotalSubtitle');
+      if (subTitleEl) {
+        subTitleEl.innerText = s.tag_scope ? `Databases (#${s.tag_scope})` : 'Databases';
+      }
       document.getElementById('statHealthy').innerText = s.healthy || 0;
       document.getElementById('statFailed').innerText = s.failed || 0;
       document.getElementById('statOverdue').innerText = s.overdue || 0;
@@ -854,6 +916,19 @@
         addLog('STDERR', '--------------------------------------------------------------', 'text-amber-400 font-semibold');
       }
 
+      if (target.peak_memory_bytes || target.disk_footprint_bytes) {
+        const ram = target.peak_memory_bytes ? formatBytes(target.peak_memory_bytes) : 'N/A';
+        const disk = target.disk_footprint_bytes ? formatBytes(target.disk_footprint_bytes) : 'N/A';
+        addLog('RESOURCE', `Measured Sandbox Footprint -> Peak RAM: ${ram} | Real Disk: ${disk}`, 'text-indigo-300 font-semibold');
+      }
+      if (target.incremental_patches_applied && target.incremental_patches_applied.length > 0) {
+        addLog('PATCH', `Replayed ${target.incremental_patches_applied.length} incremental patches: ${target.incremental_patches_applied.join(', ')}`, 'text-sky-300 font-semibold');
+      }
+      if (target.remediation && target.remediation.triggered) {
+        const remStatus = target.remediation.success ? 'SUCCESS' : 'FAILED';
+        addLog('REMEDY', `Automated Incident Remediation Playbook: "${target.remediation.command}" -> ${remStatus} (${target.remediation.duration_ms}ms)`, target.remediation.success ? 'text-emerald-300' : 'text-rose-400 font-bold');
+      }
+
       addLog('TEARDOWN', 'Destroying ephemeral sandbox database container and reclaiming resources...');
       if (target.last_passed) {
         addLog('VERDICT', `✅ SUCCESS: Target "${target.name}" is verified restorable (Total drill: ${target.last_duration_ms ? (target.last_duration_ms / 1000).toFixed(2) + 's' : 'done'})`, 'text-emerald-400 font-bold');
@@ -863,6 +938,8 @@
 
       currentDrawerRawLogs = rawLines.join('\n');
       document.getElementById('terminalLogsContent').innerHTML = lines.join('');
+      const filterInput = document.getElementById('drawerLogFilter');
+      if (filterInput) filterInput.value = '';
 
       // Open drawer
       const overlay = document.getElementById('terminalDrawerOverlay');
@@ -871,6 +948,33 @@
       requestAnimationFrame(() => {
         drawer.classList.remove('translate-x-full');
       });
+    }
+
+    function filterDrawerLogs() {
+      const q = (document.getElementById('drawerLogFilter').value || '').toLowerCase().trim();
+      const container = document.getElementById('terminalLogsContent');
+      const rows = container.querySelectorAll('div');
+      rows.forEach(r => {
+        if (!q) {
+          r.style.display = '';
+        } else {
+          const match = r.innerText.toLowerCase().includes(q);
+          r.style.display = match ? '' : 'none';
+        }
+      });
+    }
+
+    function downloadTerminalLogs() {
+      if (!currentDrawerRawLogs || !currentDrawerTarget) return;
+      const blob = new Blob([currentDrawerRawLogs], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${currentDrawerTarget.name}-drill-${new Date().toISOString().slice(0, 10)}.log`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     }
 
     function closeTerminalDrawer() {

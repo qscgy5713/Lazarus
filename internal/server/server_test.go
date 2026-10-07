@@ -241,6 +241,10 @@ func TestMetricsEndpoint(t *testing.T) {
 		"lazarus_target_last_drill_timestamp_seconds{target=",
 		"lazarus_target_restore_duration_seconds{target=",
 		"lazarus_target_duration_seconds{target=",
+		"lazarus_incremental_patches_count{target=",
+		"lazarus_remediation_status{target=",
+		"lazarus_sla_compliance_rate",
+		"lazarus_mttr_seconds",
 	}
 
 	for _, metric := range expectedMetrics {

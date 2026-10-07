@@ -842,8 +842,8 @@ docker compose run --rm --entrypoint sh \
 ### 核心功能
 
 - **全時態健康儀表板 (Health Overview)**：直觀掌握各資料庫目標最新狀態（`PASS` / `FAIL` / `OVERDUE` / `MUTED`）、備份大小變化趨勢與還原耗時。
-- **Web UI 即時日誌抽屜與終端機視窗 (Live Terminal Logs Drawer)**：在各目標卡片點擊「📋 Logs」即從右側滑出專業黑色終端機抽屜，以 Monospace 與顏色高亮呈現 LOCATE、BACKUP、SANDBOX、RESTORE、CHECKS 與 TEARDOWN 完整演練日誌串流，並支援「一鍵複製」與 ESC 快捷鍵關閉。
-- **目標標籤分組與即時篩選 (Tag Chips & Filtering)**：依據目標標籤（如 `#prod`、`#staging`、`#aws`）在頂部動態生成晶片篩選按鈕列，支援即時多環境切換；CSV 匯出功能自動同步當前選取之標籤。
+- **多租戶 / 團隊標籤篩選與組織級統計 (Multi-tenant Tag View & Dynamic SLA)**：依據目標標籤（如 `#prod`、`#staging`、`#payment`）在頂部動態生成晶片篩選按鈕列。點選特定團隊標籤時，頂部卡片即時動態重算該團隊專屬的 Tracked Targets、Verified Restorable、Failed Drills 與動態 SLA 達標率，提供組織級的多團隊隔離視圖；CSV 匯出功能自動同步當前選取之標籤。
+- **Web UI 即時日誌抽屜與關鍵字搜尋/下載 (Live Terminal Logs Drawer & Download)**：在各目標卡片點擊「📋 Logs」即從右側滑出專業黑色終端機抽屜，以 Monospace 與顏色高亮呈現 LOCATE、BACKUP、SANDBOX、RESTORE、CHECKS、RESOURCE（沙盒 RAM/磁碟開銷）、PATCH（增量補丁回放）、REMEDY（自動修復劇本追蹤）與 TEARDOWN 完整演練日誌串流，並內建**即時關鍵字過濾搜尋**、**「📥 Download」一鍵下載為文字檔**與**「📋 Copy」一鍵複製**功能。
 - **手動即時觸發演練 (On-Demand Drill Trigger)**：在 Web UI 目標卡片上一鍵點擊「⚡ Run Drill」或透過 API (`POST /api/v1/targets/{name}/trigger`) 即時觸發演練標記，支援手動驗收與即時輪詢。
 - **RTO 還原耗時歷史趨勢圖 (Historical RTO Sparkline)**：在各目標卡片內建純 SVG 輕量趨勢曲線圖，即時呈現過去數次演練之還原耗時波動與成功/失敗節點。
 - **維護模式與警報靜音 (Mute Alerts)**：當資料庫進行排程升級或停機維護時，可於 Web UI 或透過 API (`POST /api/v1/targets/{name}/mute`) 將目標一鍵切換為維護靜音模式，避免觸發誤報，並即時於狀態卡片與 Prometheus 指標同步。
@@ -852,7 +852,17 @@ docker compose run --rm --entrypoint sh \
 - **容器失敗日誌回溯 (Container Stderr Tail)**：演練失敗時自動提取容器末 50 行 Stderr 日誌，直接呈現於 Web UI 終端機抽屜與 Slack/Teams 告警訊息中，無需手動 SSH 進主機即可一眼掌握崩潰原因。
 - **Dead Man's Snitch（逾期靜默失效偵測）**：傳統監控只在腳本報錯時發出警報，但如果 crontab 被誤刪、伺服器離線或備份腳本死當，監控系統根本收不到任何通知。Control Plane 在目標超過預期時間（預設 26 小時）未收到還原報告時，自動標記為 `OVERDUE` 並亮起警報（處於維護靜音中的目標除外）。
 - **合規稽核證明一鍵產生 (Audit Proof)**：內建合規報告匯出功能，將歷史還原紀錄整合成具時間戳記與資料筆數校驗的災難復原演練報告，直接提供給 SOC 2 Type II、ISO 27001 或金融監管稽核人員。
-- **Prometheus 指標暴露 (`/metrics`) 與開箱即用 Grafana 儀表板**：原生暴露標準 Prometheus Exporter 端點，包含各目標還原耗時 (`lazarus_target_restore_duration_seconds`)、健康狀態 (`lazarus_target_status`，含 muted=3) 與統計指標。專案於 [`examples/grafana/lazarus-dashboard.json`](examples/grafana/lazarus-dashboard.json) 提供預先配置好的 Grafana 視覺化儀表板，支援一鍵匯入。
+- **Prometheus / OpenTelemetry SRE 指標暴露 (`/metrics`) 與開箱即用 Grafana 儀表板**：原生暴露標準 Prometheus Exporter 端點，涵蓋企業級 SRE 指標：
+  - `lazarus_target_status`：目標健康狀態（1=健康, 0=失敗, 2=逾期, 3=維護靜音）
+  - `lazarus_target_restore_duration_seconds`：各目標實際還原耗時
+  - `lazarus_target_duration_seconds`：包含容器初始化與健康校驗之總演練時長
+  - `lazarus_sandbox_peak_memory_bytes`：沙盒容器還原過程的 RAM 最高峰值開銷
+  - `lazarus_sandbox_disk_footprint_bytes`：沙盒資料庫實體磁碟目錄佔用大小
+  - `lazarus_incremental_patches_count`：還原過程回放套用的增量補丁總數量
+  - `lazarus_remediation_status`：自動修復劇本執行狀態（1=成功, 0=失敗, -1=未觸發）
+  - `lazarus_sla_compliance_rate`：全域與組織級 SLA RTO 達標率百分比 (0-100)
+  - `lazarus_mttr_seconds`：整體平均還原時間（MTTR）秒數
+  專案於 [`examples/grafana/lazarus-dashboard.json`](examples/grafana/lazarus-dashboard.json) 提供預先配置好的 Grafana 視覺化儀表板，支援一鍵匯入。
 - **Kubernetes 原生健康探針 (`/healthz` 與 `/readyz`)**：符合雲原生標準，提供存活探針（Liveness: `/healthz`，輸出運行時間與目標數）與就緒探針（Readiness: `/readyz`，檢驗狀態儲存可用性）。
 - **純 Go 輕量單一執行檔**：無需額外架設 PostgreSQL/MySQL 或 Redis，自帶內嵌 Web 介面與持久化狀態，資源消耗低於 20MB RAM。
 
