@@ -84,6 +84,16 @@ cd Lazarus
 go build -o lazarus ./cmd/lazarus
 ```
 
+## 5 秒快速體驗（零依賴）
+
+想在不用 Docker、不用雲端金鑰的狀況下立刻親眼看看效果？直接跑專案內附的示範腳本：
+
+```bash
+./examples/quickstart.sh
+```
+
+腳本會自動建立一個暫時的 SQLite 資料庫、模擬真實備份檔並執行 SQL 斷言演練，輸出 `PASS quickstart-sqlite` 並在結束後自動清理暫存檔。
+
 ## 使用
 
 ```bash
@@ -440,6 +450,13 @@ LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx
 ```
 
 查看執行紀錄：`journalctl -u lazarus.service`。手動觸發一次：`sudo systemctl start lazarus.service`。
+
+若需將 **Lazarus Control Plane (Web UI)** 作為常駐系統服務運行，可使用 [`examples/systemd/lazarus-server.service`](examples/systemd/lazarus-server.service)：
+
+```bash
+sudo cp examples/systemd/lazarus-server.service /etc/systemd/system/
+sudo systemctl enable --now lazarus-server
+```
 
 ## 用 Docker Compose 部署
 

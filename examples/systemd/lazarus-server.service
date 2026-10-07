@@ -1,0 +1,29 @@
+[Unit]
+Description=Lazarus Control Plane — Disaster Recovery & Backup Verification Dashboard
+After=network.target
+
+# Prerequisites:
+#   sudo useradd -r -s /bin/false lazarus
+#   sudo mkdir -p /var/lib/lazarus /opt/lazarus
+#   sudo chown -R lazarus:lazarus /var/lib/lazarus /opt/lazarus
+
+[Service]
+Type=simple
+User=lazarus
+Group=lazarus
+WorkingDirectory=/opt/lazarus
+ExecStart=/opt/lazarus/lazarus-server -addr :8080 -state /var/lib/lazarus/lazarus-server.json
+Restart=always
+RestartSec=5s
+
+# Secrets and configuration overrides (e.g. SERVER_API_KEY, ALERT_WEBHOOK_URL)
+EnvironmentFile=-/opt/lazarus/server.env
+
+# Sandboxing and security hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
