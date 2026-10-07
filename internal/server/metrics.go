@@ -134,6 +134,22 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 12. Distributed Workers Metrics
+	workers := s.store.GetWorkers()
+	onlineWorkers := 0
+	for _, wrk := range workers {
+		if wrk.Status == WorkerStatusOnline || wrk.Status == WorkerStatusBusy {
+			onlineWorkers++
+		}
+	}
+	buf.WriteString("\n# HELP lazarus_workers_online Total number of active distributed runners connected.\n")
+	buf.WriteString("# TYPE lazarus_workers_online gauge\n")
+	fmt.Fprintf(&buf, "lazarus_workers_online %d\n", onlineWorkers)
+
+	buf.WriteString("\n# HELP lazarus_workers_total Total number of registered distributed runners.\n")
+	buf.WriteString("# TYPE lazarus_workers_total gauge\n")
+	fmt.Fprintf(&buf, "lazarus_workers_total %d\n", len(workers))
+
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(buf.Bytes())

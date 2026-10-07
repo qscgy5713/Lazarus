@@ -17,6 +17,7 @@ type Store struct {
 	overdueThreshold time.Duration
 	targets          map[string]*TargetRecord
 	reports          []InboundReport
+	workers          map[string]*WorkerRecord
 }
 
 type persistedState struct {
@@ -32,6 +33,7 @@ func NewStore(filePath string, overdueThreshold time.Duration) *Store {
 		overdueThreshold: overdueThreshold,
 		targets:          make(map[string]*TargetRecord),
 		reports:          make([]InboundReport, 0),
+		workers:          make(map[string]*WorkerRecord),
 	}
 	s.load()
 	return s
@@ -165,6 +167,96 @@ func (s *Store) TriggerTarget(name string) error {
 	rec.TriggerPending = true
 	s.save()
 	return nil
+}
+
+func (s *Store) RegisterWorker(w WorkerRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	w.LastHeartbeat = time.Now().UTC()
+	if w.Status == "" {
+		w.Status = WorkerStatusOnline
+	}
+	s.workers[w.ID] = &w
+}
+
+func (s *Store) HeartbeatWorker(id string, currentTask string, status WorkerStatus) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	w, exists := s.workers[id]
+	if !exists {
+		return false
+	}
+	w.LastHeartbeat = time.Now().UTC()
+	if currentTask != "" {
+		w.CurrentTask = currentTask
+	}
+	if status != "" {
+		w.Status = status
+	} else if w.CurrentTask != "" {
+		w.Status = WorkerStatusBusy
+	} else {
+		w.Status = WorkerStatusOnline
+	}
+	return true
+}
+
+func (s *Store) GetWorkers() []WorkerRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	out := make([]WorkerRecord, 0, len(s.workers))
+	for _, w := range s.workers {
+		// Mark workers without heartbeat for > 60s as offline
+		if now.Sub(w.LastHeartbeat) > 60*time.Second {
+			w.Status = WorkerStatusOffline
+			w.CurrentTask = ""
+		}
+		out = append(out, *w)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+func (s *Store) ClaimPendingTarget(workerTags []string) (*TargetRecord, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tagSet := make(map[string]bool)
+	for _, t := range workerTags {
+		tagSet[strings.ToLower(strings.TrimSpace(t))] = true
+	}
+
+	for _, rec := range s.targets {
+		if !rec.TriggerPending {
+			continue
+		}
+		// If worker specifies tags, check intersection
+		if len(tagSet) > 0 {
+			matched := false
+			for _, t := range rec.Tags {
+				if tagSet[strings.ToLower(strings.TrimSpace(t))] {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+
+		rec.TriggerPending = false
+		s.save()
+		cloned := *rec
+		return &cloned, true
+	}
+
+	return nil, false
 }
 
 func hasTag(tags []string, targetTag string) bool {
@@ -554,4 +646,27 @@ func (s *Store) SeedDemoData() {
 	for _, rep := range demoReports {
 		s.RecordReport(rep)
 	}
+
+	s.RegisterWorker(WorkerRecord{
+		ID:       "runner-aws-us-east-1",
+		Hostname: "worker-ec2-01.us-east-1.internal",
+		Version:  "1.4.0",
+		Tags:     []string{"prod", "aws", "postgres"},
+		Status:   WorkerStatusOnline,
+	})
+	s.RegisterWorker(WorkerRecord{
+		ID:       "runner-gcp-europe-west3",
+		Hostname: "worker-gce-02.europe-west3.c.project.internal",
+		Version:  "1.4.0",
+		Tags:     []string{"analytics", "gcp", "mysql"},
+		Status:   WorkerStatusOnline,
+	})
+	s.RegisterWorker(WorkerRecord{
+		ID:          "runner-k8s-staging",
+		Hostname:    "lazarus-runner-7b9c6f8f4-xj2kl",
+		Version:     "1.4.0",
+		Tags:        []string{"staging", "sqlite"},
+		Status:      WorkerStatusBusy,
+		CurrentTask: "staging-sqlite",
+	})
 }

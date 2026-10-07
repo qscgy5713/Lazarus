@@ -105,6 +105,14 @@
           <span>📜</span>
           <span>Compliance Certificate</span>
         </button>
+        <button id="workersBtn" onclick="openWorkersModal()" class="px-3.5 py-1.5 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 transition flex items-center space-x-1.5 shadow-sm" title="View Distributed Runner Nodes">
+          <span>👷</span>
+          <span id="workersCountLabel">Workers (0)</span>
+        </button>
+        <button id="authBtn" onclick="openAuthModal()" class="px-3 py-1.5 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 transition flex items-center space-x-1.5 shadow-sm" title="RBAC Authentication Status">
+          <span id="authIcon">🔑</span>
+          <span id="authLabel">Admin</span>
+        </button>
         <div id="sseIndicator" class="px-2.5 py-1.5 text-xs font-mono rounded-lg border border-slate-800 bg-slate-900 text-slate-400 flex items-center space-x-1.5 shadow-sm" title="Realtime Server-Sent Events">
           <span id="sseDot" class="h-2 w-2 rounded-full bg-slate-500"></span>
           <span id="sseLabel" class="text-[11px]">Connecting</span>
@@ -385,12 +393,82 @@
     </div>
   </div>
 
+  <!-- Workers Modal -->
+  <div id="workersModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full p-6 shadow-2xl space-y-4 max-h-[85vh] flex flex-col">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div>
+          <h3 class="font-bold text-lg text-white font-mono flex items-center space-x-2">
+            <span>👷 Distributed Drill Runners</span>
+            <span id="workersModalCount" class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-normal">0 active</span>
+          </h3>
+          <p class="text-xs text-slate-400">Live heartbeat and task assignments across edge runners</p>
+        </div>
+        <button onclick="closeWorkersModal()" class="text-slate-400 hover:text-white text-xl font-bold p-1">&times;</button>
+      </div>
+      <div id="workersModalList" class="space-y-3 overflow-y-auto flex-1 pr-1">
+        <!-- Rendered dynamically -->
+      </div>
+      <div class="pt-3 border-t border-slate-800 flex justify-between items-center text-xs text-slate-500">
+        <span>Runners register via <code>lazarus --worker --control-plane=http://...</code></span>
+        <button onclick="fetchWorkers(true)" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded transition">Refresh</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- RBAC Authentication Modal -->
+  <div id="authModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div>
+          <h3 class="font-bold text-lg text-white font-mono flex items-center space-x-2">
+            <span>🔑 RBAC Authentication</span>
+          </h3>
+          <p class="text-xs text-slate-400">Role-Based Access Control and API token configuration</p>
+        </div>
+        <button onclick="closeAuthModal()" class="text-slate-400 hover:text-white text-xl font-bold p-1">&times;</button>
+      </div>
+      <div class="space-y-3 text-xs">
+        <div class="p-3 bg-slate-950/60 rounded-lg border border-slate-800 flex justify-between items-center">
+          <span class="text-slate-400">Current Role</span>
+          <span id="authCurrentRoleBadge" class="font-mono font-bold px-2 py-0.5 rounded text-emerald-400 bg-emerald-950/40 border border-emerald-800/40">ADMIN</span>
+        </div>
+        <div class="space-y-1">
+          <label class="block text-slate-300 font-semibold">API Key / Bearer Token</label>
+          <input id="authTokenInput" type="password" placeholder="Enter Admin Key or Viewer Key..." class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 font-mono text-xs focus:outline-none focus:border-indigo-500 transition" />
+          <p class="text-[11px] text-slate-500">Stored safely in browser localStorage for this domain.</p>
+        </div>
+      </div>
+      <div class="pt-3 border-t border-slate-800 flex justify-end space-x-2 text-xs">
+        <button onclick="clearAuthToken()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 rounded-lg transition font-medium">Clear / Reset</button>
+        <button onclick="saveAuthToken()" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-semibold transition">Save &amp; Unlock</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let globalTargets = [];
     let globalSummary = null;
     let currentTag = '';
     let currentDrawerTarget = null;
     let currentDrawerRawLogs = '';
+    let authToken = localStorage.getItem('lazarus_auth_token') || '';
+    let currentUserRole = 'admin';
+    let globalWorkers = [];
+
+    async function authFetch(url, options = {}) {
+      options.headers = options.headers || {};
+      if (authToken) {
+        options.headers['Authorization'] = 'Bearer ' + authToken;
+      }
+      const res = await fetch(url, options);
+      if (res.status === 401 || res.status === 403) {
+        if (options.method && options.method.toUpperCase() !== 'GET') {
+          alert('⚠️ Permission Denied: Admin role required for this action. Please click 🔑 Admin button to set your Admin Key.');
+        }
+      }
+      return res;
+    }
 
     function escapeHtml(str) {
       if (str === null || str === undefined) return '';
@@ -407,10 +485,10 @@
       if (icon) icon.classList.add('animate-spin');
       try {
         const [sumRes, tgtRes, repRes, dailyRes] = await Promise.all([
-          fetch('/api/v1/summary'),
-          fetch('/api/v1/targets'),
-          fetch('/api/v1/reports'),
-          fetch('/api/v1/metrics/daily?days=30')
+          authFetch('/api/v1/summary'),
+          authFetch('/api/v1/targets'),
+          authFetch('/api/v1/reports'),
+          authFetch('/api/v1/metrics/daily?days=30')
         ]);
         const summary = await sumRes.json();
         const targets = await tgtRes.json();
@@ -656,8 +734,10 @@
       if (!name) return;
       const endpoint = mute ? `/api/v1/targets/${encodeURIComponent(name)}/mute` : `/api/v1/targets/${encodeURIComponent(name)}/unmute`;
       try {
-        await fetch(endpoint, { method: 'POST' });
-        fetchData();
+        const res = await authFetch(endpoint, { method: 'POST' });
+        if (res.ok) {
+          fetchData();
+        }
       } catch (err) {
         console.error('Failed to toggle mute:', err);
       }
@@ -666,7 +746,7 @@
     async function triggerDrill(name) {
       if (!name) return;
       try {
-        const res = await fetch(`/api/v1/targets/${encodeURIComponent(name)}/trigger`, { method: 'POST' });
+        const res = await authFetch(`/api/v1/targets/${encodeURIComponent(name)}/trigger`, { method: 'POST' });
         if (res.ok) {
           fetchData();
         }
@@ -1100,12 +1180,150 @@
       document.getElementById('historyModal').classList.add('hidden');
     }
 
+    // Workers Modal Functions
+    async function fetchWorkers(renderModal = false) {
+      try {
+        const res = await authFetch('/api/v1/workers');
+        if (res.ok) {
+          const workers = await res.json();
+          globalWorkers = workers || [];
+          const onlineCount = globalWorkers.filter(w => w.status === 'online' || w.status === 'busy').length;
+          const label = document.getElementById('workersCountLabel');
+          if (label) label.innerText = `Workers (${onlineCount}/${globalWorkers.length})`;
+          const modalCount = document.getElementById('workersModalCount');
+          if (modalCount) modalCount.innerText = `${onlineCount} online / ${globalWorkers.length} total`;
+          if (renderModal || !document.getElementById('workersModal').classList.contains('hidden')) {
+            renderWorkersList();
+          }
+        }
+      } catch (e) {
+        console.error('Failed to fetch workers', e);
+      }
+    }
+
+    function renderWorkersList() {
+      const list = document.getElementById('workersModalList');
+      if (!list) return;
+      if (globalWorkers.length === 0) {
+        list.innerHTML = '<div class="py-8 text-center text-slate-500 text-xs">No distributed workers registered yet. Launch a runner with <code>lazarus --worker</code> to connect.</div>';
+        return;
+      }
+      list.innerHTML = globalWorkers.map(w => {
+        let statusBadge = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+        let statusDot = 'bg-emerald-400';
+        if (w.status === 'busy') {
+          statusBadge = 'bg-sky-500/10 text-sky-400 border-sky-500/20';
+          statusDot = 'bg-sky-400 animate-pulse';
+        } else if (w.status === 'offline') {
+          statusBadge = 'bg-slate-700/50 text-slate-400 border-slate-600/50';
+          statusDot = 'bg-slate-500';
+        }
+        const tags = (w.tags && w.tags.length > 0)
+          ? w.tags.map(t => `<span class="px-1.5 py-0.5 text-[10px] font-mono rounded bg-slate-800 text-slate-300 border border-slate-700">#${escapeHtml(t)}</span>`).join(' ')
+          : '<span class="text-slate-600 text-[10px] italic">all targets</span>';
+        const taskInfo = w.current_task
+          ? `<div class="mt-2 text-xs font-mono text-indigo-300 bg-indigo-950/40 p-2 rounded border border-indigo-900/40">⚡ Running Task: <strong class="text-white">${escapeHtml(w.current_task)}</strong></div>`
+          : '';
+        return `
+          <div class="p-3 bg-slate-950/70 border border-slate-800 rounded-xl space-y-2 hover:border-slate-700 transition text-xs">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center space-x-2">
+                <span class="h-2.5 w-2.5 rounded-full ${statusDot}"></span>
+                <span class="font-mono text-white font-bold">${escapeHtml(w.id)}</span>
+                <span class="text-slate-400 text-[11px] font-mono">(${escapeHtml(w.hostname || 'unknown')} &bull; v${escapeHtml(w.version || 'dev')})</span>
+              </div>
+              <span class="px-2 py-0.5 rounded text-[10px] font-bold border uppercase ${statusBadge}">${w.status}</span>
+            </div>
+            <div class="flex items-center space-x-2 text-[11px] text-slate-400">
+              <span>Tags:</span>
+              <div class="flex flex-wrap gap-1">${tags}</div>
+              <span class="ml-auto font-mono text-[10px] text-slate-500">Heartbeat: ${formatAgo(w.last_heartbeat)}</span>
+            </div>
+            ${taskInfo}
+          </div>
+        `;
+      }).join('');
+    }
+
+    function openWorkersModal() {
+      fetchWorkers(true);
+      document.getElementById('workersModal').classList.remove('hidden');
+    }
+
+    function closeWorkersModal() {
+      document.getElementById('workersModal').classList.add('hidden');
+    }
+
+    // RBAC Authentication Functions
+    async function checkAuthRole() {
+      try {
+        const res = await authFetch('/api/v1/auth/me');
+        if (res.ok) {
+          const data = await res.json();
+          currentUserRole = data.role || 'viewer';
+          const authLabel = document.getElementById('authLabel');
+          const authBadge = document.getElementById('authCurrentRoleBadge');
+          if (authLabel) {
+            authLabel.innerText = data.role === 'admin' ? 'Admin' : 'Viewer';
+            authLabel.className = data.role === 'admin' ? 'text-indigo-300 font-bold' : 'text-amber-400 font-medium';
+          }
+          if (authBadge) {
+            authBadge.innerText = (data.role || 'viewer').toUpperCase();
+            authBadge.className = data.role === 'admin'
+              ? 'font-mono font-bold px-2 py-0.5 rounded text-emerald-400 bg-emerald-950/40 border border-emerald-800/40'
+              : 'font-mono font-bold px-2 py-0.5 rounded text-amber-400 bg-amber-950/40 border border-amber-800/40';
+          }
+        }
+      } catch (e) {
+        console.error('Failed to check auth role', e);
+      }
+    }
+
+    function openAuthModal() {
+      const input = document.getElementById('authTokenInput');
+      if (input) input.value = authToken;
+      checkAuthRole();
+      document.getElementById('authModal').classList.remove('hidden');
+    }
+
+    function closeAuthModal() {
+      document.getElementById('authModal').classList.add('hidden');
+    }
+
+    function saveAuthToken() {
+      const input = document.getElementById('authTokenInput');
+      const val = (input ? input.value : '').trim();
+      authToken = val;
+      if (val) {
+        localStorage.setItem('lazarus_auth_token', val);
+      } else {
+        localStorage.removeItem('lazarus_auth_token');
+      }
+      checkAuthRole();
+      closeAuthModal();
+      fetchData();
+      fetchWorkers();
+    }
+
+    function clearAuthToken() {
+      authToken = '';
+      localStorage.removeItem('lazarus_auth_token');
+      const input = document.getElementById('authTokenInput');
+      if (input) input.value = '';
+      checkAuthRole();
+      closeAuthModal();
+      fetchData();
+      fetchWorkers();
+    }
+
     // Keyboard ESC listener
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         closeTerminalDrawer();
         closeCertificateModal();
         closeTargetHistoryModal();
+        closeWorkersModal();
+        closeAuthModal();
       }
     });
 
@@ -1183,9 +1401,14 @@
     }
 
     initTheme();
+    checkAuthRole();
     fetchData();
+    fetchWorkers();
     initSSE();
-    setInterval(fetchData, 30000);
+    setInterval(() => {
+      fetchData();
+      fetchWorkers();
+    }, 30000);
   </script>
 </body>
 </html>

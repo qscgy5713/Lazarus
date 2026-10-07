@@ -147,3 +147,47 @@ type DailyMetric struct {
 	AvgRestoreMs int64   `json:"avg_restore_ms"`
 	SuccessRate  float64 `json:"success_rate"`
 }
+
+// UserRole defines RBAC permission level.
+type UserRole string
+
+const (
+	RoleAdmin     UserRole = "admin"
+	RoleViewer    UserRole = "viewer"
+	RoleAnonymous UserRole = "anonymous"
+)
+
+// AuthStatusResponse communicates the current client role and authentication state.
+type AuthStatusResponse struct {
+	Role          UserRole `json:"role"`
+	Authenticated bool     `json:"authenticated"`
+	AuthRequired  bool     `json:"auth_required"`
+	Username      string   `json:"username,omitempty"`
+}
+
+// WorkerStatus represents the availability of a distributed drill worker.
+type WorkerStatus string
+
+const (
+	WorkerStatusOnline  WorkerStatus = "online"
+	WorkerStatusBusy    WorkerStatus = "busy"
+	WorkerStatusOffline WorkerStatus = "offline"
+)
+
+// WorkerRecord represents a distributed drill runner connected to Control Plane.
+type WorkerRecord struct {
+	ID            string       `json:"id"`
+	Hostname      string       `json:"hostname"`
+	Version       string       `json:"version"`
+	Tags          []string     `json:"tags,omitempty"`
+	Status        WorkerStatus `json:"status"`
+	LastHeartbeat time.Time    `json:"last_heartbeat"`
+	CurrentTask   string       `json:"current_task,omitempty"`
+}
+
+// WorkerPollResponse is returned when a worker queries for dispatchable drill tasks.
+type WorkerPollResponse struct {
+	HasTask    bool          `json:"has_task"`
+	Target     *TargetRecord `json:"target,omitempty"`
+	TargetName string        `json:"target_name,omitempty"`
+}

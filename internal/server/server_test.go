@@ -661,3 +661,207 @@ func TestStreamSSE(t *testing.T) {
 		t.Errorf("expected 'event: connected' in initial chunk, got: %q", received)
 	}
 }
+
+func TestAuthRBAC(t *testing.T) {
+	// 1. Without keys configured (default admin access)
+	sDefault := New(Config{DemoMode: true})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	rec := httptest.NewRecorder()
+	sDefault.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var me AuthStatusResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &me)
+	if me.Role != RoleAdmin || me.AuthRequired {
+		t.Errorf("expected RoleAdmin and AuthRequired=false, got %+v", me)
+	}
+
+	// 2. With AdminKey and ViewerKey configured
+	sAuth := New(Config{
+		DemoMode:  true,
+		AdminKey:  "secret-admin",
+		ViewerKey: "secret-viewer",
+	})
+
+	// Anonymous access to /auth/me -> Anonymous role, AuthRequired=true
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	sAuth.Handler().ServeHTTP(rec, req)
+	_ = json.Unmarshal(rec.Body.Bytes(), &me)
+	if me.Role != RoleAnonymous || !me.AuthRequired {
+		t.Errorf("expected anonymous to be RoleAnonymous with AuthRequired=true, got %+v", me)
+	}
+
+	// Authenticated as Viewer
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	req.Header.Set("Authorization", "Bearer secret-viewer")
+	sAuth.Handler().ServeHTTP(rec, req)
+	_ = json.Unmarshal(rec.Body.Bytes(), &me)
+	if me.Role != RoleViewer {
+		t.Errorf("expected RoleViewer, got %s", me.Role)
+	}
+
+	// Authenticated as Admin
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	req.Header.Set("Authorization", "Bearer secret-admin")
+	sAuth.Handler().ServeHTTP(rec, req)
+	_ = json.Unmarshal(rec.Body.Bytes(), &me)
+	if me.Role != RoleAdmin {
+		t.Errorf("expected RoleAdmin, got %s", me.Role)
+	}
+
+	// Attempt trigger drill without token -> 401
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/targets/production-postgres/trigger", nil)
+	sAuth.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized, got %d", rec.Code)
+	}
+
+	// Attempt trigger drill with viewer token -> 403 Forbidden
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/targets/production-postgres/trigger", nil)
+	req.Header.Set("Authorization", "Bearer secret-viewer")
+	sAuth.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden, got %d", rec.Code)
+	}
+
+	// Attempt trigger drill with admin token -> 202 Accepted
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/targets/production-postgres/trigger", nil)
+	req.Header.Set("Authorization", "Bearer secret-admin")
+	sAuth.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Errorf("expected 202 Accepted for admin trigger, got %d", rec.Code)
+	}
+
+	// Attempt mute target with viewer token -> 403 Forbidden
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/targets/production-postgres/mute", nil)
+	req.Header.Set("Authorization", "Bearer secret-viewer")
+	sAuth.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden for viewer mute, got %d", rec.Code)
+	}
+
+	// Attempt mute target with admin token -> 200 OK
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/targets/production-postgres/mute", nil)
+	req.Header.Set("Authorization", "Bearer secret-admin")
+	sAuth.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for admin mute, got %d", rec.Code)
+	}
+}
+
+func TestWorkersLifecycleAndPolling(t *testing.T) {
+	s := New(Config{DemoMode: false})
+
+	// 1. Register worker
+	regBody, _ := json.Marshal(map[string]any{
+		"id":       "worker-node-1",
+		"hostname": "k8s-runner-pod",
+		"version":  "v1.4.0",
+		"tags":     []string{"prod", "us-east"},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workers/register", bytes.NewReader(regBody))
+	req.Header.Set("Content-Type", "application/json")
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register worker status = %d, want 200", rec.Code)
+	}
+
+	// 2. Query workers list
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/workers", nil)
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get workers status = %d, want 200", rec.Code)
+	}
+	var workers []WorkerRecord
+	_ = json.Unmarshal(rec.Body.Bytes(), &workers)
+	if len(workers) != 1 || workers[0].ID != "worker-node-1" {
+		t.Fatalf("unexpected workers list: %+v", workers)
+	}
+	if workers[0].Status != WorkerStatusOnline {
+		t.Errorf("expected status 'online', got %s", workers[0].Status)
+	}
+
+	// 3. Heartbeat update
+	hbBody, _ := json.Marshal(map[string]string{
+		"id":           "worker-node-1",
+		"status":       "busy",
+		"current_task": "orders-db",
+	})
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/workers/heartbeat", bytes.NewReader(hbBody))
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("heartbeat status = %d, want 200", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/workers", nil)
+	s.Handler().ServeHTTP(rec, req)
+	_ = json.Unmarshal(rec.Body.Bytes(), &workers)
+	if workers[0].Status != WorkerStatusBusy || workers[0].CurrentTask != "orders-db" {
+		t.Errorf("expected busy worker with orders-db task, got %+v", workers[0])
+	}
+
+	// 4. Ingest target and trigger drill
+	report := InboundReport{
+		Passed:    true,
+		Total:     1,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Results: []InboundResult{
+			{
+				Target: "orders-db",
+				Passed: true,
+				Tags:   []string{"prod"},
+			},
+		},
+	}
+	reportBytes, _ := json.Marshal(report)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/reports", bytes.NewReader(reportBytes))
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	// Trigger target
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/targets/orders-db/trigger", nil)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("trigger drill failed: %d", rec.Code)
+	}
+
+	// 5. Worker Poll Task
+	pollBody, _ := json.Marshal(map[string]any{
+		"worker_id": "worker-node-1",
+		"tags":      []string{"prod"},
+	})
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/workers/poll", bytes.NewReader(pollBody))
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("poll status = %d, want 200", rec.Code)
+	}
+	var pollResp WorkerPollResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &pollResp)
+	if !pollResp.HasTask || pollResp.TargetName != "orders-db" {
+		t.Errorf("expected claimed task for 'orders-db', got %+v", pollResp)
+	}
+
+	// 6. Next poll should have no task (already claimed)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/workers/poll", bytes.NewReader(pollBody))
+	s.Handler().ServeHTTP(rec, req)
+	_ = json.Unmarshal(rec.Body.Bytes(), &pollResp)
+	if pollResp.HasTask {
+		t.Errorf("expected HasTask=false on second poll, got true")
+	}
+}

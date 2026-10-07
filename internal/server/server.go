@@ -19,7 +19,9 @@ import (
 
 type Config struct {
 	Addr             string
-	APIKey           string
+	APIKey           string // Fallback Admin API key (backward compatible)
+	AdminKey         string // Explicit Admin API key
+	ViewerKey        string // Explicit Viewer / read-only API key
 	StateFile        string
 	OverdueThreshold time.Duration
 	DemoMode         bool
@@ -119,11 +121,18 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
 	s.mux.HandleFunc("GET /", s.handleDashboard)
+	s.mux.HandleFunc("GET /api/v1/auth/me", s.handleAuthMe)
+	s.mux.HandleFunc("POST /api/v1/auth/login", s.handleAuthLogin)
 	s.mux.HandleFunc("POST /api/v1/reports", s.handlePostReport)
 	s.mux.HandleFunc("GET /api/v1/targets", s.handleGetTargets)
 	s.mux.HandleFunc("POST /api/v1/targets/{name}/mute", s.handleMuteTarget)
 	s.mux.HandleFunc("POST /api/v1/targets/{name}/unmute", s.handleUnmuteTarget)
 	s.mux.HandleFunc("POST /api/v1/targets/{name}/trigger", s.handleTriggerTarget)
+	s.mux.HandleFunc("GET /api/v1/workers", s.handleGetWorkers)
+	s.mux.HandleFunc("POST /api/v1/workers/register", s.handleRegisterWorker)
+	s.mux.HandleFunc("POST /api/v1/workers/heartbeat", s.handleHeartbeatWorker)
+	s.mux.HandleFunc("GET /api/v1/workers/poll", s.handlePollWorker)
+	s.mux.HandleFunc("POST /api/v1/workers/poll", s.handlePollWorker)
 	s.mux.HandleFunc("GET /api/v1/reports", s.handleGetReports)
 	s.mux.HandleFunc("GET /api/v1/summary", s.handleGetSummary)
 	s.mux.HandleFunc("GET /api/v1/metrics/daily", s.handleGetDailyMetrics)
@@ -132,41 +141,71 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/stream", s.handleStream)
 }
 
-func (s *Server) checkAuth(r *http.Request) bool {
-	if s.cfg.APIKey == "" {
-		return true
+func (s *Server) getRole(r *http.Request) UserRole {
+	adminKey := s.cfg.AdminKey
+	if adminKey == "" {
+		adminKey = s.cfg.APIKey
 	}
-	expected := []byte(s.cfg.APIKey)
+	viewerKey := s.cfg.ViewerKey
 
+	// If no auth keys configured at all, grant RoleAdmin by default
+	if adminKey == "" && viewerKey == "" {
+		return RoleAdmin
+	}
+
+	token := s.extractToken(r)
+	if token == "" {
+		return RoleAnonymous
+	}
+
+	if adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(adminKey)) == 1 {
+		return RoleAdmin
+	}
+	if viewerKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(viewerKey)) == 1 {
+		return RoleViewer
+	}
+
+	return RoleAnonymous
+}
+
+func (s *Server) extractToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
 	if strings.HasPrefix(auth, "Bearer ") {
-		token := []byte(strings.TrimPrefix(auth, "Bearer "))
-		if subtle.ConstantTimeCompare(token, expected) == 1 {
-			return true
-		}
+		return strings.TrimPrefix(auth, "Bearer ")
 	}
 	for _, header := range []string{"X-Lazarus-Key", "X-API-Key"} {
 		if val := r.Header.Get(header); val != "" {
-			if subtle.ConstantTimeCompare([]byte(val), expected) == 1 {
-				return true
-			}
+			return val
 		}
 	}
+	if q := r.URL.Query().Get("api_key"); q != "" {
+		return q
+	}
+	return ""
+}
+
+func (s *Server) requireRole(w http.ResponseWriter, r *http.Request, minRole UserRole) bool {
+	role := s.getRole(r)
+	if role == RoleAdmin {
+		return true
+	}
+	if minRole == RoleViewer && role == RoleViewer {
+		return true
+	}
+	if role == RoleAnonymous {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return false
+	}
+	http.Error(w, `{"error":"forbidden: admin role required"}`, http.StatusForbidden)
 	return false
 }
 
+func (s *Server) checkAuth(r *http.Request) bool {
+	return s.getRole(r) != RoleAnonymous
+}
+
 func (s *Server) checkStreamAuth(r *http.Request) bool {
-	if s.checkAuth(r) {
-		return true
-	}
-	if s.cfg.APIKey == "" {
-		return true
-	}
-	key := r.URL.Query().Get("api_key")
-	if key != "" && subtle.ConstantTimeCompare([]byte(key), []byte(s.cfg.APIKey)) == 1 {
-		return true
-	}
-	return false
+	return s.getRole(r) != RoleAnonymous
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -260,8 +299,7 @@ func (s *Server) handleGetDailyMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMuteTarget(w http.ResponseWriter, r *http.Request) {
-	if !s.checkAuth(r) {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	if !s.requireRole(w, r, RoleAdmin) {
 		return
 	}
 	name := r.PathValue("name")
@@ -279,8 +317,7 @@ func (s *Server) handleMuteTarget(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUnmuteTarget(w http.ResponseWriter, r *http.Request) {
-	if !s.checkAuth(r) {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	if !s.requireRole(w, r, RoleAdmin) {
 		return
 	}
 	name := r.PathValue("name")
@@ -298,8 +335,7 @@ func (s *Server) handleUnmuteTarget(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTriggerTarget(w http.ResponseWriter, r *http.Request) {
-	if !s.checkAuth(r) {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	if !s.requireRole(w, r, RoleAdmin) {
 		return
 	}
 	name := r.PathValue("name")
@@ -616,4 +652,120 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
+	role := s.getRole(r)
+	authRequired := s.cfg.AdminKey != "" || s.cfg.ViewerKey != ""
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(AuthStatusResponse{
+		Role:          role,
+		Authenticated: role != RoleAnonymous,
+		AuthRequired:  authRequired,
+	})
+}
+
+func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Token string `json:"token"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	fakeReq, _ := http.NewRequest(http.MethodGet, "/", nil)
+	if body.Token != "" {
+		fakeReq.Header.Set("Authorization", "Bearer "+body.Token)
+	}
+
+	role := s.getRole(fakeReq)
+	if role == RoleAnonymous {
+		http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+		return
+	}
+
+	authRequired := s.cfg.AdminKey != "" || s.cfg.ViewerKey != ""
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(AuthStatusResponse{
+		Role:          role,
+		Authenticated: true,
+		AuthRequired:  authRequired,
+	})
+}
+
+func (s *Server) handleGetWorkers(w http.ResponseWriter, r *http.Request) {
+	if !s.requireRole(w, r, RoleViewer) {
+		return
+	}
+	workers := s.store.GetWorkers()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(workers)
+}
+
+func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
+	if !s.requireRole(w, r, RoleViewer) {
+		return
+	}
+	var wrk WorkerRecord
+	if err := json.NewDecoder(r.Body).Decode(&wrk); err != nil || wrk.ID == "" {
+		http.Error(w, `{"error":"invalid worker record (id is required)"}`, http.StatusBadRequest)
+		return
+	}
+	s.store.RegisterWorker(wrk)
+	s.Broadcast("worker_registered", wrk)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "registered", "id": wrk.ID})
+}
+
+func (s *Server) handleHeartbeatWorker(w http.ResponseWriter, r *http.Request) {
+	if !s.requireRole(w, r, RoleViewer) {
+		return
+	}
+	var req struct {
+		ID          string       `json:"id"`
+		CurrentTask string       `json:"current_task"`
+		Status      WorkerStatus `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		http.Error(w, `{"error":"invalid heartbeat payload"}`, http.StatusBadRequest)
+		return
+	}
+	if !s.store.HeartbeatWorker(req.ID, req.CurrentTask, req.Status) {
+		http.Error(w, `{"error":"worker not found, please register"}`, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+func (s *Server) handlePollWorker(w http.ResponseWriter, r *http.Request) {
+	if !s.requireRole(w, r, RoleViewer) {
+		return
+	}
+	var tags []string
+	tagsParam := r.URL.Query().Get("tags")
+	if tagsParam != "" {
+		for _, t := range strings.Split(tagsParam, ",") {
+			if trimmed := strings.TrimSpace(t); trimmed != "" {
+				tags = append(tags, trimmed)
+			}
+		}
+	} else if r.Body != nil {
+		var req struct {
+			WorkerID string   `json:"worker_id"`
+			Tags     []string `json:"tags"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			tags = req.Tags
+		}
+	}
+
+	target, hasTask := s.store.ClaimPendingTarget(tags)
+	w.Header().Set("Content-Type", "application/json")
+	resp := WorkerPollResponse{
+		HasTask: hasTask,
+		Target:  target,
+	}
+	if target != nil {
+		resp.TargetName = target.Name
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }

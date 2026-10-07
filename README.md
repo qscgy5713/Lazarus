@@ -858,6 +858,8 @@ docker compose run --rm --entrypoint sh \
 - **容器失敗日誌回溯 (Container Stderr Tail)**：演練失敗時自動提取容器末 50 行 Stderr 日誌，直接呈現於 Web UI 終端機抽屜與 Slack/Teams 告警訊息中，無需手動 SSH 進主機即可一眼掌握崩潰原因。
 - **Dead Man's Snitch（逾期靜默失效偵測）**：傳統監控只在腳本報錯時發出警報，但如果 crontab 被誤刪、伺服器離線或備份腳本死當，監控系統根本收不到任何通知。Control Plane 在目標超過預期時間（預設 26 小時）未收到還原報告時，自動標記為 `OVERDUE` 並亮起警報（處於維護靜音中的目標除外）。
 - **合規稽核證明一鍵產生 (Audit Proof)**：內建合規報告匯出功能，將歷史還原紀錄整合成具時間戳記與資料筆數校驗的災難復原演練報告，直接提供給 SOC 2 Type II、ISO 27001 或金融監管稽核人員。
+- **企業級 RBAC 角色與 Token 鑑權 (Role-Based Access Control)**：劃分 `admin`（具備觸發演練、靜音警報、註冊邊緣節點完整操作權限）與 `viewer`（唯讀檢視看板、下載審計報告與合規證書）。支援 `--admin-key` 與 `--viewer-key`，未配置時預設向下相容開放。Web 控制台頂部提供「🔑 Admin/Viewer」Token 彈窗，輸入 Key 即時解鎖管理權限，非 Admin 操作自動攔截防止誤觸。
+- **分散式 Worker 邊緣節點調度與拓撲面板 (Distributed Worker Registry & Dispatch)**：支援跨多機房、多 VPC 的 Lazarus Runner 以 Worker 模式常駐運行（`lazarus --worker --control-plane=http://...`）。Worker 自動向 Control Plane 註冊主機名稱、版本與支援標籤，每 10 秒發送心跳維持在線狀態；Control Plane 動態派發待演練任務給對應標籤之 Runner。Web 控制台頂部「👷 Workers」面板即時展示邊緣節點在線/忙碌狀態與運行任務。
 - **Prometheus / OpenTelemetry SRE 指標暴露 (`/metrics`) 與開箱即用 Grafana 儀表板**：原生暴露標準 Prometheus Exporter 端點，涵蓋企業級 SRE 指標：
   - `lazarus_target_status`：目標健康狀態（1=健康, 0=失敗, 2=逾期, 3=維護靜音）
   - `lazarus_target_restore_duration_seconds`：各目標實際還原耗時
@@ -870,6 +872,7 @@ docker compose run --rm --entrypoint sh \
   - `lazarus_mttr_seconds`：整體平均還原時間（MTTR）秒數
   - `lazarus_target_rpo_lag_seconds`：目標最新資料記錄相對於演練當下的真實落後時間（RPO Data Lag 秒數）
   - `lazarus_target_rpo_compliant`：目標是否符合設定的 RPO 復原點 SLA 承諾（1=達標, 0=違約）
+  - `lazarus_workers_online` / `lazarus_workers_total`：分散式邊緣演練 Runner 當前在線數量與註冊總數
   專案於 [`examples/grafana/lazarus-dashboard.json`](examples/grafana/lazarus-dashboard.json) 提供預先配置好的 Grafana 視覺化儀表板，支援一鍵匯入。
 - **Kubernetes 原生健康探針 (`/healthz` 與 `/readyz`)**：符合雲原生標準，提供存活探針（Liveness: `/healthz`，輸出運行時間與目標數）與就緒探針（Readiness: `/readyz`，檢驗狀態儲存可用性）。
 - **純 Go 輕量單一執行檔**：無需額外架設 PostgreSQL/MySQL 或 Redis，自帶內嵌 Web 介面與持久化狀態，資源消耗低於 20MB RAM。
@@ -886,7 +889,9 @@ go build -o lazarus-server ./cmd/server
 
 參數說明：
 - `-addr`: HTTP 監聽位址（預設 `:8080`，可透過環境變數 `PORT` 或 `ADDR` 設定）
-- `-api-key`: Webhook 驗證金鑰（可透過環境變數 `SERVER_API_KEY` 設定；支援 `X-API-Key`、`X-Lazarus-Key` 或 `Authorization: Bearer <token>`）
+- `-admin-key`: RBAC 管理員金鑰（擁有 trigger 觸發、mute 靜音與註冊權限；可透過環境變數 `ADMIN_KEY` 設定）
+- `-viewer-key`: RBAC 唯讀檢視員金鑰（僅可查看儀表板與匯出審計紀錄；可透過環境變數 `VIEWER_KEY` 設定）
+- `-api-key`: 向下相容 Webhook/Admin 驗證金鑰（可透過環境變數 `SERVER_API_KEY` 設定；支援 `X-API-Key`、`X-Lazarus-Key` 或 `Authorization: Bearer <token>`）
 - `-state`: 狀態持久化 JSON 檔案路徑（預設 `lazarus-server.json`）
 - `-overdue`: 逾期標記閥值時間（預設 `26h`）
 - `-demo`: 啟用示範模式（預載代表性演練資料，亦可透過環境變數 `DEMO_MODE=true` 設定）
@@ -894,7 +899,16 @@ go build -o lazarus-server ./cmd/server
 - `-alert-format`: 逾期告警訊息格式（預設 `slack`，支援 `slack`、`discord`、`teams`、`generic`，亦可透過環境變數 `ALERT_FORMAT` 設定）
 - `-alert-interval`: 逾期檢查間隔（預設 `10m`，亦可透過環境變數 `ALERT_INTERVAL` 設定）
 
-### 將 Lazarus 演練回報至 Control Plane
+### 分散式 Worker 邊緣節點模式啟動 (Worker Mode)
+
+當備份檔案座落於多個獨立 VPC、專用隔離環境或邊緣機房時，可將 Lazarus CLI 以分散式 Worker 模式啟動，自動向 Control Plane 註冊並輪詢認領手動或排程觸發的演練任務：
+
+```bash
+# 啟動分散式 Worker（自動註冊、發送心跳並輪詢待執行的演練任務）
+./lazarus --worker --control-plane "http://control-plane.internal:8080" --worker-token "your-admin-key" --interval 5s
+```
+
+### 將 Lazarus 演練回報至 Control Plane (Webhook 模式)
 
 在 `lazarus.yml` 中設定 `notify`：
 
@@ -1027,6 +1041,12 @@ goreleaser release --snapshot --clean --skip=publish
 ```
 
 `.goreleaser.yaml` 的設定也會在每次 CI 跑的時候用 `goreleaser check` 跟一次單一平台的快照建置驗證過，設定檔壞掉不用等到真的推 tag 才發現。
+
+## 專案文件索引 (Documentation)
+
+- [工作日誌 (Worklog)](doc/worklog.md)：記錄演進歷程、問題排查與架構決策。
+- [待辦清單 (TODO)](doc/todo.md)：追蹤功能實作與測試覆蓋完成狀態。
+- [設計計畫 (Plan)](doc/plan.md)：企業級分散式災難復原演練平台架構規劃與技術指標。
 
 ## 授權
 

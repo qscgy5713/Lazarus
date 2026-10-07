@@ -50,6 +50,16 @@ notify:
   # When set, notification messages will include a "View Dashboard" button.
   # dashboard_url: "https://control-plane.internal:8080"
 
+# Control Plane & Distributed Worker Orchestration Settings:
+#
+# 1. Run Control Plane Server with RBAC:
+#    lazarus-server --addr=:8080 --admin-key="secret-admin" --viewer-key="secret-viewer"
+#
+# 2. Run Distributed Drill Runner (Worker Mode):
+#    lazarus --worker --control-plane="http://control-plane.internal:8080" --worker-token="secret-admin" --interval=5s
+#    The worker automatically registers its hostname/tags, sends periodic heartbeats,
+#    and claims pending manual trigger drills from the central web console.
+
 targets:
   - name: production-postgres
     engine: postgres
