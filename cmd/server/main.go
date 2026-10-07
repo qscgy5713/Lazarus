@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -60,8 +61,12 @@ func main() {
 
 	fmt.Println("==========================================================")
 	fmt.Printf("⚡ Lazarus Control Plane — Disaster Recovery Dashboard (%s)\n", version)
-	fmt.Printf("   Web Dashboard : http://localhost%s\n", *addr)
-	fmt.Printf("   Report Webhook: http://localhost%s/api/v1/reports\n", *addr)
+	displayURL := *addr
+	if strings.HasPrefix(displayURL, ":") {
+		displayURL = "localhost" + displayURL
+	}
+	fmt.Printf("   Web Dashboard : http://%s\n", displayURL)
+	fmt.Printf("   Report Webhook: http://%s/api/v1/reports\n", displayURL)
 	fmt.Printf("   State File    : %s\n", *stateFile)
 	if *demoMode {
 		fmt.Println("   Demo Mode     : Active (Preloaded sample drill records)")

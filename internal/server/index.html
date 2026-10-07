@@ -367,8 +367,15 @@
         list.innerHTML = '<p class="text-slate-500 text-xs">No targets verified yet.</p>';
       } else {
         list.innerHTML = globalTargets.map(t => {
-          const statusClass = t.status === 'healthy' ? 'bg-emerald-950 text-emerald-400' : 'bg-rose-950 text-rose-400';
-          const label = t.status === 'healthy' ? 'VERIFIED' : 'UNVERIFIED';
+          let statusClass = 'bg-rose-950 text-rose-400';
+          let label = 'UNVERIFIED';
+          if (t.status === 'healthy') {
+            statusClass = 'bg-emerald-950 text-emerald-400';
+            label = 'VERIFIED';
+          } else if (t.status === 'muted') {
+            statusClass = 'bg-slate-800 text-slate-400 border border-slate-700';
+            label = 'MUTED';
+          }
           const safeName = escapeHtml(t.name);
           return '<div class="flex items-center justify-between p-3 bg-slate-950/80 rounded border border-slate-800 text-xs">' +
             '<div>' +

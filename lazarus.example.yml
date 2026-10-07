@@ -59,8 +59,10 @@ targets:
     # README. Nothing to set here for that; it's detected from the name.
     path: /backups/postgres/shop-*.sql.gz
 
-    # Automatically delete the local backup file at path after verification
+    # Automatically delete the downloaded backup file at path after verification
     # finishes to reclaim disk space (ideal for remote/S3 pulled backups).
+    # NOTE: cleanup_backup cannot be combined with wildcard/glob patterns (*?[)
+    # to prevent deleting rolling archives, and requires an exact file path.
     # cleanup_backup: true
 
     # Fail if the newest backup is older than this. A backup that restores

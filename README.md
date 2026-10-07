@@ -125,6 +125,7 @@ FAIL  production-mysql [checks] check "customers table is populated" failed: got
 | 變數 | 說明 |
 |---|---|
 | `LAZARUS_WEBHOOK_URL` | 通知用的 webhook URL，會覆寫設定檔裡的值（見下方「失敗通知」） |
+| `LAZARUS_API_KEY` | Webhook / Control Plane 驗證金鑰 Bearer token，會覆寫設定檔裡的值 |
 | `LAZARUS_GPG_PASSPHRASE` | 解密 GPG 加密備份用的密語（見下方「GPG 加密備份」）。沒有加密備份就不用設 |
 
 Lazarus 會在 `state_file`（預設 `lazarus-state.json`）記錄每個目標上一次「完整通過驗證」的備份大小，用來支援下方的「備份大小驟變偵測」。這個檔案可以隨時刪除——下次執行就會重新從零開始建立基準值。
@@ -287,6 +288,9 @@ targets:
       key: postgres/shop-latest.sql.gz
     cleanup_backup: true   # 演練完畢自動刪除本機 /tmp/shop-latest.sql.gz
 ```
+
+> [!IMPORTANT]
+> 為了防範誤刪本機主要的輪替備份檔案，`cleanup_backup: true` **嚴禁**與包含萬用字元（如 `*`、`?`、`[`）的 Glob 路徑混用；且必須搭配遠端拉取（`s3` 或 `fetch_command`），`path` 必須為具體確定的單一檔案路徑。
 
 #### S3 下載即時進度與速率
 
@@ -529,17 +533,19 @@ go build -o lazarus-server ./cmd/server
 - `-overdue`: 逾期標記閥值時間（預設 `26h`）
 - `-demo`: 啟用示範模式（預載代表性演練資料，亦可透過環境變數 `DEMO_MODE=true` 設定）
 - `-alert-webhook`: Dead Man's Snitch 主動推播 Webhook URL（亦可透過環境變數 `ALERT_WEBHOOK_URL` 注入；當目標逾期且未靜音時主動發送 Slack / Discord / Teams 通知）
+- `-alert-format`: 逾期告警訊息格式（預設 `slack`，支援 `slack`、`discord`、`teams`、`generic`，亦可透過環境變數 `ALERT_FORMAT` 設定）
 - `-alert-interval`: 逾期檢查間隔（預設 `10m`，亦可透過環境變數 `ALERT_INTERVAL` 設定）
 
 ### 將 Lazarus 演練回報至 Control Plane
 
-在 `lazarus.yml` 中設定 webhook：
+在 `lazarus.yml` 中設定 `notify`：
 
 ```yaml
-webhook:
-  url: "http://control-plane.internal:8080/api/v1/reports"
-  auth_header: "X-API-Key"
-  auth_token: "your-super-secret-key"
+notify:
+  webhook_url: "http://control-plane.internal:8080/api/v1/reports"
+  api_key: "your-super-secret-key"
+  format: lazarus
+  when: always   # 建議設為 always，確保無論成功或失敗均向 Control Plane 回報心跳狀態
 ```
 
 或者直接透過環境變數注入（推薦在 CI / 排程環境中使用）：
