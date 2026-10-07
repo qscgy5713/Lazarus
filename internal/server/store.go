@@ -229,6 +229,30 @@ func (s *Store) GetSummary() Summary {
 	if eligible := sum.TotalTargets - sum.Muted; eligible > 0 {
 		sum.SLAPercentage = float64(slaPassed) / float64(eligible) * 100.0
 	}
+
+	// Compute 30-day MTTR (Mean Time to Restore) and drill volume
+	var totalRestoreMs int64
+	var restoreCount int64
+	cutoff30d := time.Now().Add(-30 * 24 * time.Hour)
+
+	for _, rec := range s.targets {
+		for _, h := range rec.RecentHistory {
+			if h.DrilledAt.After(cutoff30d) {
+				sum.TotalDrills30d++
+				if h.Passed {
+					sum.PassedDrills30d++
+				}
+				if h.RestoreMs > 0 {
+					totalRestoreMs += h.RestoreMs
+					restoreCount++
+				}
+			}
+		}
+	}
+	if restoreCount > 0 {
+		sum.AvgRestoreMs = totalRestoreMs / restoreCount
+	}
+
 	return sum
 }
 

@@ -266,9 +266,10 @@ type Check struct {
 	Command string `yaml:"command"`
 	Min        *int64 `yaml:"expect_min"`
 	Max        *int64 `yaml:"expect_max"`
-	Equal      *int64 `yaml:"expect_equal"`
-	Pattern    string `yaml:"expect_pattern"`     // regex that the output must match
-	NotPattern string `yaml:"expect_not_pattern"` // regex that the output must NOT match
+	Equal        *int64  `yaml:"expect_equal"`
+	ExpectString *string `yaml:"expect_string"`     // exact string match (ideal for checksums / hashes)
+	Pattern      string  `yaml:"expect_pattern"`    // regex that the output must match
+	NotPattern   string  `yaml:"expect_not_pattern"`// regex that the output must NOT match
 }
 
 const (
@@ -517,13 +518,16 @@ func validateCheck(targetName string, index int, c *Check) error {
 	}
 
 	expectations := 0
-	for _, set := range []bool{c.Min != nil, c.Max != nil, c.Equal != nil, c.Pattern != "", c.NotPattern != ""} {
+	for _, set := range []bool{c.Min != nil, c.Max != nil, c.Equal != nil, c.Pattern != "", c.NotPattern != "", c.ExpectString != nil} {
 		if set {
 			expectations++
 		}
 	}
 	if expectations == 0 {
-		return fmt.Errorf("target %q check %q: needs one of expect_min, expect_max, expect_equal, expect_pattern or expect_not_pattern", targetName, c.Name)
+		return fmt.Errorf("target %q check %q: needs one of expect_min, expect_max, expect_equal, expect_string, expect_pattern or expect_not_pattern", targetName, c.Name)
+	}
+	if c.ExpectString != nil && expectations > 1 {
+		return fmt.Errorf("target %q check %q: expect_string cannot be combined with other expectations", targetName, c.Name)
 	}
 	if expectations > 1 && (c.Pattern != "" || c.NotPattern != "") && (c.Equal != nil || c.Min != nil || c.Max != nil) {
 		return fmt.Errorf("target %q check %q: pattern expectations cannot be combined with numeric expectations", targetName, c.Name)

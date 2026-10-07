@@ -581,6 +581,50 @@ Lazarus Control Plane 後端提供 `GET /api/v1/stream` 原生 Server-Sent Event
 - 任何演練報告上傳或手動觸發時，所有連線中的瀏覽器即時同步刷新卡片與指標。
 - 支援 `?api_key=` 權限鑑權與定期 Ping 心跳保持連線。
 
+### 6. 孤兒沙盒自動資源回收器 (Orphan Container Reaper)
+
+在主機非預期重開機或遭 `kill -9` 強制中斷時，Lazarus 容器標註有 `lazarus.sandbox=true` 與時間戳記：
+- 每次演練開始前自動在背景收割超過 2 小時的懸空孤兒容器與 SQLite 暫存檔，徹底杜絕磁碟洩漏。
+
+### 7. 離線備份診斷與快速探測 (`lazarus inspect`)
+
+免啟動 Docker，快速探測備份檔之魔術位元組、真實格式、壓縮方式與 SHA-256：
+
+```bash
+./lazarus inspect /backups/postgres/shop-latest.sql.gz
+```
+
+輸出範例：
+```text
+File:        /backups/postgres/shop-latest.sql.gz
+Size:        14.4 KB (14745 bytes)
+Age:         2h13m (modified 2026-09-17T06:00:00Z)
+Format:      postgres-custom
+Compression: gzip (compressed=true)
+Encrypted:   false
+MagicBytes:  1f8b080000000000
+SHA-256:     e4d909c290d0fb1ca068ffaddf22cbd0...
+```
+
+### 8. 關鍵資料表哈希與精確字串比對 (`expect_string`)
+
+在 checks 中支援精確字串比對，適合針對關鍵配置表或權限表進行 MD5/SHA256 哈希防竄改與防靜默覆蓋比對：
+
+```yaml
+checks:
+  - name: system configs checksum matches baseline
+    sql: SELECT md5(string_agg(key || '=' || value, ',' ORDER BY key)) FROM system_configs
+    expect_string: "e4d909c290d0fb1ca068ffaddf22cbd0"
+```
+
+### 9. 互動式快速配置生成精靈 (`lazarus init`)
+
+一鍵生成標準且包含最佳實踐的設定檔範本：
+
+```bash
+./lazarus init lazarus.yml
+```
+
 ## 排進 cron
 
 ```cron

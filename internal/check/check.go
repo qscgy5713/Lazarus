@@ -45,6 +45,11 @@ func run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, c confi
 		return result
 	}
 
+	if c.ExpectString != nil {
+		result.Passed, result.Reason = evaluateString(raw, c)
+		return result
+	}
+
 	if c.Pattern != "" || c.NotPattern != "" {
 		result.Passed, result.Reason = evaluatePattern(raw, c)
 		return result
@@ -62,6 +67,17 @@ func run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, c confi
 	return result
 }
 
+func evaluateString(raw string, c config.Check) (bool, string) {
+	if c.ExpectString == nil {
+		return false, "no expect_string configured"
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == *c.ExpectString {
+		return true, ""
+	}
+	return false, fmt.Sprintf("got %q, want exactly %q", trimmed, *c.ExpectString)
+}
+
 // Evaluate is the same pass/fail comparison run() uses, exported so a
 // verification path that doesn't run checks through a sandbox (sqlitecheck,
 // which queries a file directly) can still share the exact same logic.
@@ -69,6 +85,9 @@ func Evaluate(value int64, c config.Check) (bool, string) { return evaluate(valu
 
 // EvaluatePattern is exported for sqlitecheck to evaluate pattern expectations.
 func EvaluatePattern(raw string, c config.Check) (bool, string) { return evaluatePattern(raw, c) }
+
+// EvaluateString is exported for sqlitecheck to evaluate exact string expectations.
+func EvaluateString(raw string, c config.Check) (bool, string) { return evaluateString(raw, c) }
 
 // ParseScalar is exported for the same reason as Evaluate.
 func ParseScalar(raw string) (int64, error) { return parseScalar(raw) }

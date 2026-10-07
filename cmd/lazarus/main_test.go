@@ -318,3 +318,43 @@ targets:
 		t.Errorf("stdout = %q, want it to mention config OK and test-dry-run", stdout)
 	}
 }
+
+func TestInspectSubcommand(t *testing.T) {
+	dir := t.TempDir()
+	dumpPath := filepath.Join(dir, "mybackup.sql")
+	if err := os.WriteFile(dumpPath, []byte("SELECT 42;"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, exitCode, err := runLazarus("inspect", dumpPath)
+	if err != nil {
+		t.Fatalf("run inspect: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, "mybackup.sql") || !strings.Contains(stdout, "SHA-256") {
+		t.Errorf("stdout = %q, expected inspect summary", stdout)
+	}
+}
+
+func TestInitSubcommand(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "generated.yml")
+
+	stdout, stderr, exitCode, err := runLazarus("init", targetPath)
+	if err != nil {
+		t.Fatalf("run init: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, "Created") {
+		t.Errorf("stdout = %q, want created message", stdout)
+	}
+
+	// Verify file was written
+	if _, err := os.Stat(targetPath); err != nil {
+		t.Fatalf("expected generated file %s to exist: %v", targetPath, err)
+	}
+}

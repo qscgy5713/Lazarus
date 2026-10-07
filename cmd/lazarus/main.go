@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"lazarus/internal/config"
+	"lazarus/internal/inspect"
 	"lazarus/internal/notify"
 	"lazarus/internal/report"
 	"lazarus/internal/state"
@@ -28,6 +29,16 @@ import (
 var version = "dev"
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "inspect":
+			inspectCommand(os.Args[2:])
+			return
+		case "init":
+			initCommand(os.Args[2:])
+			return
+		}
+	}
 	configPath := flag.String("config", "lazarus.yml", "path to the config file")
 	targetName := flag.String("target", "", "verify only this target (default: all)")
 	tagFilter := flag.String("tag", "", "verify only targets matching this tag")
@@ -329,4 +340,80 @@ func filterByTag(targets []config.Target, tag string) ([]config.Target, error) {
 		return nil, fmt.Errorf("no targets matched tag %q", tag)
 	}
 	return matched, nil
+}
+
+func inspectCommand(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: lazarus inspect <backup-path-or-glob> [--json]")
+		os.Exit(2)
+	}
+	path := args[0]
+	asJSON := false
+	for _, a := range args[1:] {
+		if a == "--json" {
+			asJSON = true
+		}
+	}
+
+	rep, err := inspect.InspectFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "lazarus inspect: %v\n", err)
+		os.Exit(1)
+	}
+
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(rep)
+		return
+	}
+
+	fmt.Printf("File:        %s\n", rep.Path)
+	fmt.Printf("Size:        %s (%d bytes)\n", rep.HumanSize, rep.Size)
+	fmt.Printf("Age:         %s (modified %s)\n", rep.Age.Round(time.Minute), rep.ModTime.Format(time.RFC3339))
+	fmt.Printf("Format:      %s\n", rep.Format)
+	fmt.Printf("Compression: %s (compressed=%t)\n", rep.Compression, rep.Compressed)
+	fmt.Printf("Encrypted:   %t\n", rep.Encrypted)
+	fmt.Printf("Magic Bytes: %s\n", rep.MagicBytes)
+	fmt.Printf("SHA-256:     %s\n", rep.SHA256)
+}
+
+func initCommand(args []string) {
+	targetFile := "lazarus.yml"
+	if len(args) > 0 {
+		targetFile = args[0]
+	}
+	if _, err := os.Stat(targetFile); err == nil {
+		fmt.Fprintf(os.Stderr, "lazarus init: file %q already exists. Aborting to prevent overwrite.\n", targetFile)
+		os.Exit(1)
+	}
+
+	content := `# Lazarus verification configuration
+state_file: lazarus-state.json
+parallelism: 4
+
+notify:
+  webhook_url: "" # or set LAZARUS_WEBHOOK_URL env var
+  format: slack
+  when: on_failure
+
+targets:
+  - name: production-db
+    engine: postgres
+    path: /backups/postgres/*.sql.gz
+    max_age: 26h
+    max_restore_duration: 30m
+    sla_rto: 15m
+    fallback_on_failure: true
+    auto_schema_check: true
+    checks:
+      - name: database has tables
+        sql: "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"
+        expect_min: 1
+`
+	if err := os.WriteFile(targetFile, []byte(content), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "lazarus init: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✓ Created %s successfully! Run `lazarus --config %s` to start disaster recovery drill.\n", targetFile, targetFile)
 }

@@ -519,6 +519,11 @@ func sizeDriftError(current, baseline int64, maxDecreasePct float64) error {
 
 // RunAll verifies every target, continuing past failures.
 func RunAll(ctx context.Context, targets []config.Target, st *state.State, parallelism int, keepOnFailure bool, gpgPassphrase string) []Result {
+	// Proactively sweep any leftover orphan sandboxes in the background
+	go func() {
+		_, _ = sandbox.ReapOrphans(context.Background(), 2*time.Hour)
+	}()
+
 	if parallelism <= 0 {
 		parallelism = 1
 	}

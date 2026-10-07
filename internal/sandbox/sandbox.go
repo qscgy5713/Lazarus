@@ -6,7 +6,10 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -69,7 +72,11 @@ func StartWithOptions(ctx context.Context, engine config.Engine, image string, o
 	if opts.Network != "" {
 		netMode = opts.Network
 	}
-	args := []string{"run", "--detach", "--name", name, "--rm", "--network", netMode}
+	args := []string{
+		"run", "--detach", "--name", name, "--rm", "--network", netMode,
+		"--label", "lazarus.sandbox=true",
+		"--label", fmt.Sprintf("lazarus.created_at=%d", time.Now().Unix()),
+	}
 	if opts.ReadOnlyRootfs {
 		args = append(args, "--read-only", "--tmpfs", "/tmp", "--tmpfs", "/run")
 	}
@@ -237,3 +244,50 @@ func User() string { return dbUser }
 
 // Password is the sandbox database password.
 func Password() string { return dbPassword }
+
+// ReapOrphans scans for leftover lazarus sandbox containers that have exceeded
+// maxAge and force-removes them to prevent host resource starvation.
+// Also cleans up lingering /tmp/lazarus-sqlite-* files older than maxAge.
+func ReapOrphans(ctx context.Context, maxAge time.Duration) (int, error) {
+	if maxAge <= 0 {
+		maxAge = 2 * time.Hour
+	}
+	reaped := 0
+
+	// 1. Docker containers with lazarus.sandbox=true label
+	out, err := exec.CommandContext(ctx, "docker", "ps", "-a",
+		"--filter", "label=lazarus.sandbox=true",
+		"--format", `{{.ID}}\t{{.Label "lazarus.created_at"}}`,
+	).Output()
+
+	if err == nil {
+		cutoffUnix := time.Now().Add(-maxAge).Unix()
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		for _, l := range lines {
+			parts := strings.Split(l, "\t")
+			if len(parts) >= 1 && strings.TrimSpace(parts[0]) != "" {
+				id := strings.TrimSpace(parts[0])
+				createdAtUnix := int64(0)
+				if len(parts) >= 2 {
+					createdAtUnix, _ = strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+				}
+				// If createdAt timestamp is older than cutoff, or not recorded, reap it
+				if createdAtUnix == 0 || createdAtUnix < cutoffUnix {
+					_ = exec.CommandContext(ctx, "docker", "rm", "-f", id).Run()
+					reaped++
+				}
+			}
+		}
+	}
+
+	// 2. Lingering sqlite temp files in os.TempDir()
+	matches, _ := filepath.Glob(filepath.Join(os.TempDir(), "lazarus-sqlite-*"))
+	cutoff := time.Now().Add(-maxAge)
+	for _, m := range matches {
+		if info, err := os.Stat(m); err == nil && info.ModTime().Before(cutoff) {
+			_ = os.Remove(m)
+		}
+	}
+
+	return reaped, nil
+}

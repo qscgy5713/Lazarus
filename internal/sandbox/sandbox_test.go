@@ -2,8 +2,11 @@ package sandbox
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"lazarus/internal/config"
 )
@@ -58,5 +61,27 @@ func TestStartUnsupportedEngine(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported engine \"unknown-engine\"") {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestReapOrphans(t *testing.T) {
+	// 1. Create a dummy expired sqlite temp file in TempDir
+	oldTemp := filepath.Join(os.TempDir(), "lazarus-sqlite-test-expired.tmp")
+	if err := os.WriteFile(oldTemp, []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-5 * time.Hour)
+	_ = os.Chtimes(oldTemp, oldTime, oldTime)
+
+	// 2. Call ReapOrphans with 2h cutoff
+	_, err := ReapOrphans(context.Background(), 2*time.Hour)
+	if err != nil {
+		t.Fatalf("ReapOrphans error: %v", err)
+	}
+
+	// 3. Verify expired file was swept
+	if _, err := os.Stat(oldTemp); !os.IsNotExist(err) {
+		_ = os.Remove(oldTemp)
+		t.Errorf("expected %s to be reaped", oldTemp)
 	}
 }

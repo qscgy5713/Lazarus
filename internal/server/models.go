@@ -94,10 +94,13 @@ type HistoryRecord struct {
 }
 
 type Summary struct {
-	TotalTargets  int     `json:"total_targets"`
-	Healthy       int     `json:"healthy"`
-	Failed        int     `json:"failed"`
-	Overdue       int     `json:"overdue"`
-	Muted         int     `json:"muted"`
-	SLAPercentage float64 `json:"sla_percentage"`
+	TotalTargets    int     `json:"total_targets"`
+	Healthy         int     `json:"healthy"`
+	Failed          int     `json:"failed"`
+	Overdue         int     `json:"overdue"`
+	Muted           int     `json:"muted"`
+	SLAPercentage   float64 `json:"sla_percentage"`
+	AvgRestoreMs    int64   `json:"avg_restore_ms"`    // Mean Time to Restore (MTTR)
+	TotalDrills30d  int     `json:"total_drills_30d"`  // Total drills in the last 30 days
+	PassedDrills30d int     `json:"passed_drills_30d"` // Successful drills in the last 30 days
 }

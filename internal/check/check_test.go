@@ -168,3 +168,23 @@ func TestEvaluatePattern(t *testing.T) {
 		t.Errorf("expected reason to mention sanitization failed, got: %s", reason)
 	}
 }
+
+func TestEvaluateString(t *testing.T) {
+	expected := "e4d909c290d0fb1ca068ffaddf22cbd0"
+	chk := config.Check{ExpectString: &expected}
+
+	// Match success (with whitespace trimmed)
+	passed, reason := EvaluateString("  e4d909c290d0fb1ca068ffaddf22cbd0\n", chk)
+	if !passed {
+		t.Errorf("expected pass, got fail: %s", reason)
+	}
+
+	// Match failure
+	passed, reason = EvaluateString("wrong_checksum", chk)
+	if passed {
+		t.Error("expected fail on mismatched string, got pass")
+	}
+	if !strings.Contains(reason, "want exactly") {
+		t.Errorf("unexpected failure reason: %s", reason)
+	}
+}
