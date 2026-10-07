@@ -453,7 +453,7 @@ repo 根目錄的 [`docker-compose.yml`](docker-compose.yml) 預先配置好了�
 docker compose up -d server
 ```
 
-服務預設在 `http://localhost:8080` 啟動，瀏覽器直接打開即可看到視覺化儀表板。亦可直接使用 GitHub Container Registry (GHCR) 預建映像檔：
+服務預設在 `http://localhost:8080` 啟動，瀏覽器直接打開即可看到視覺化儀表板。Compose 服務已內建 `/readyz` 健康檢查探針（`healthcheck`）並以非 root 使用者 `lazarus` (UID 10001) 運行，符合安全加固規範。亦可直接使用 GitHub Container Registry (GHCR) 預建映像檔：
 
 ```bash
 docker run -d --name lazarus-server -p 8080:8080 -v lazarus-data:/data ghcr.io/qscgy5713/lazarus-server:latest
@@ -513,7 +513,8 @@ docker compose run --rm --entrypoint sh \
 - **歷史演練審計清單一鍵匯出 CSV (`/api/v1/export/csv`)**：提供歷史還原演練紀錄的 CSV 格式一鍵下載，包含演練時間戳、資料庫名稱、還原耗時、各項 checks 驗證筆數與斷言結果，便於合規存檔與稽核檢驗。
 - **Dead Man's Snitch（逾期靜默失效偵測）**：傳統監控只在腳本報錯時發出警報，但如果 crontab 被誤刪、伺服器離線或備份腳本死當，監控系統根本收不到任何通知。Control Plane 在目標超過預期時間（預設 26 小時）未收到還原報告時，自動標記為 `OVERDUE` 並亮起警報（處於維護靜音中的目標除外）。
 - **合規稽核證明一鍵產生 (Audit Proof)**：內建合規報告匯出功能，將歷史還原紀錄整合成具時間戳記與資料筆數校驗的災難復原演練報告，直接提供給 SOC 2 Type II、ISO 27001 或金融監管稽核人員。
-- **Prometheus 指標暴露 (`/metrics`)**：原生暴露標準 Prometheus Exporter 端點，包含各目標還原耗時 (`lazarus_target_restore_duration_seconds`)、健康狀態 (`lazarus_target_status`，含 muted=3) 與統計指標，無縫接入 Grafana 與 Alertmanager。
+- **Prometheus 指標暴露 (`/metrics`) 與開箱即用 Grafana 儀表板**：原生暴露標準 Prometheus Exporter 端點，包含各目標還原耗時 (`lazarus_target_restore_duration_seconds`)、健康狀態 (`lazarus_target_status`，含 muted=3) 與統計指標。專案於 [`examples/grafana/lazarus-dashboard.json`](examples/grafana/lazarus-dashboard.json) 提供預先配置好的 Grafana 視覺化儀表板，支援一鍵匯入。
+- **Kubernetes 原生健康探針 (`/healthz` 與 `/readyz`)**：符合雲原生標準，提供存活探針（Liveness: `/healthz`，輸出運行時間與目標數）與就緒探針（Readiness: `/readyz`，檢驗狀態儲存可用性）。
 - **純 Go 輕量單一執行檔**：無需額外架設 PostgreSQL/MySQL 或 Redis，自帶內嵌 Web 介面與持久化狀態，資源消耗低於 20MB RAM。
 
 ### 獨立執行檔啟動
@@ -639,9 +640,16 @@ jobs:
 
 ## 開發
 
+專案提供標準化 [`Makefile`](Makefile) 收錄常用開發工作流：
+
 ```bash
-go test ./... -race    # 單元測試，不需要 Docker
-go build ./...
+make build       # 編譯 lazarus CLI 與 lazarus-server 雙執行檔
+make test        # 執行全庫單元測試
+make test-race   # 執行包含並行競爭檢測 (-race) 之全庫測試
+make lint        # 執行靜態程式碼分析 (go vet)
+make fmt         # 自動排版 Go 程式碼 (gofmt)
+make docker      # 建置 lazarus 與 lazarus-server 之 Docker 映像檔
+make clean       # 清理本機編譯產物
 ```
 
 PostgreSQL / MySQL / Redis 的端對端測試需要 Docker，會實際起容器、產生真實的 dump 再還原——這個工具的核心價值就是「真的跑一次」，所以驗證方式也一樣。SQLite 不需要 Docker，`go test` 裡就有跑真正的 `sqlite3` CLI、真的資料庫檔案的端對端測試（本機沒裝 `sqlite3` 會自動跳過）。

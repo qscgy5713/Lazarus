@@ -26,14 +26,14 @@ jobs:
             exit 1
           fi
 
-      - name: Build
-        run: go build ./...
+      - name: Lint (make lint)
+        run: make lint
 
-      - name: Vet
-        run: go vet ./...
+      - name: Build (make build)
+        run: make build
 
-      - name: Test
-        run: go test ./... -race
+      - name: Test with race detector (make test-race)
+        run: make test-race
 
       - uses: goreleaser/goreleaser-action@v6
         with:
