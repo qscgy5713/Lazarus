@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -62,6 +63,10 @@ func (s *Store) RecordReport(report InboundReport) {
 			s.targets[res.Target] = rec
 		}
 
+		if len(res.Tags) > 0 {
+			rec.Tags = res.Tags
+		}
+
 		rec.LastPassed = res.Passed
 		rec.LastDrilledAt = now
 		rec.LastHostname = report.Hostname
@@ -94,6 +99,7 @@ func (s *Store) RecordReport(report InboundReport) {
 		// Append to history, keeping last 20
 		rec.RecentHistory = append(rec.RecentHistory, HistoryRecord{
 			Target:        res.Target,
+			Tags:          res.Tags,
 			DrilledAt:     now,
 			Passed:        res.Passed,
 			Stage:         res.Stage,
@@ -140,7 +146,20 @@ func (s *Store) TriggerTarget(name string) error {
 	return nil
 }
 
-func (s *Store) GetTargets() []*TargetRecord {
+func hasTag(tags []string, targetTag string) bool {
+	if targetTag == "" {
+		return true
+	}
+	targetTag = strings.ToLower(strings.TrimSpace(targetTag))
+	for _, t := range tags {
+		if strings.ToLower(strings.TrimSpace(t)) == targetTag {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) GetTargetsFiltered(tagFilter string) []*TargetRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -148,6 +167,9 @@ func (s *Store) GetTargets() []*TargetRecord {
 	out := make([]*TargetRecord, 0, len(s.targets))
 
 	for _, rec := range s.targets {
+		if tagFilter != "" && !hasTag(rec.Tags, tagFilter) {
+			continue
+		}
 		// Clone record to prevent mutating internal pointer
 		cloned := *rec
 		if rec.Muted {
@@ -164,6 +186,10 @@ func (s *Store) GetTargets() []*TargetRecord {
 	})
 
 	return out
+}
+
+func (s *Store) GetTargets() []*TargetRecord {
+	return s.GetTargetsFiltered("")
 }
 
 func (s *Store) GetSummary() Summary {
@@ -185,13 +211,16 @@ func (s *Store) GetSummary() Summary {
 	return sum
 }
 
-func (s *Store) GetAuditHistory(targetFilter, statusFilter string, limit int) []HistoryRecord {
+func (s *Store) GetAuditHistory(targetFilter, statusFilter, tagFilter string, limit int) []HistoryRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var all []HistoryRecord
 	for _, rec := range s.targets {
 		if targetFilter != "" && rec.Name != targetFilter {
+			continue
+		}
+		if tagFilter != "" && !hasTag(rec.Tags, tagFilter) {
 			continue
 		}
 		for _, h := range rec.RecentHistory {
@@ -204,6 +233,9 @@ func (s *Store) GetAuditHistory(targetFilter, statusFilter string, limit int) []
 			record := h
 			if record.Target == "" {
 				record.Target = rec.Name
+			}
+			if len(record.Tags) == 0 {
+				record.Tags = rec.Tags
 			}
 			all = append(all, record)
 		}
@@ -302,6 +334,7 @@ func (s *Store) SeedDemoData() {
 			Results: []InboundResult{
 				{
 					Target:            "production-postgres",
+					Tags:              []string{"prod", "aws", "postgres"},
 					Passed:            true,
 					Stage:             "done",
 					BackupPath:        "/backups/postgres/shop-prod-latest.sql.gz",
@@ -317,6 +350,7 @@ func (s *Store) SeedDemoData() {
 				},
 				{
 					Target:            "analytics-mysql",
+					Tags:              []string{"analytics", "gcp", "mysql"},
 					Passed:            true,
 					Stage:             "done",
 					BackupPath:        "/backups/mysql/events-latest.sql",
@@ -340,6 +374,7 @@ func (s *Store) SeedDemoData() {
 			Results: []InboundResult{
 				{
 					Target:            "staging-sqlite",
+					Tags:              []string{"staging", "sqlite"},
 					Passed:            false,
 					Stage:             "checks",
 					Error:             "check \"tenants count\" failed: got 0, want at least 1",
@@ -364,6 +399,7 @@ func (s *Store) SeedDemoData() {
 			Results: []InboundResult{
 				{
 					Target:            "legacy-archive-db",
+					Tags:              []string{"archive", "legacy"},
 					Passed:            true,
 					Stage:             "done",
 					BackupPath:        "/backups/postgres/archive-legacy.sql.gz",

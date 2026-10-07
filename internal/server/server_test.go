@@ -323,8 +323,67 @@ func TestExportCSV(t *testing.T) {
 	}
 
 	// First line should be header
-	if !strings.Contains(lines[0], "Target,DrilledAt,Passed") {
+	if !strings.Contains(lines[0], "Target") || !strings.Contains(lines[0], "DrilledAt") || !strings.Contains(lines[0], "Tags") {
 		t.Errorf("header = %s, missing required columns", lines[0])
+	}
+}
+
+func TestGetTargetsTagFilter(t *testing.T) {
+	s := New(Config{})
+	s.store.RecordReport(InboundReport{
+		Passed: true,
+		Results: []InboundResult{
+			{Target: "prod-db", Tags: []string{"prod", "aws"}, Passed: true},
+			{Target: "staging-db", Tags: []string{"staging"}, Passed: true},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/targets?tag=prod", nil)
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get targets code = %d, want 200", rec.Code)
+	}
+
+	var targets []*TargetRecord
+	if err := json.Unmarshal(rec.Body.Bytes(), &targets); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if len(targets) != 1 || targets[0].Name != "prod-db" {
+		t.Fatalf("expected 1 target 'prod-db', got: %+v", targets)
+	}
+}
+
+func TestExportCSVWithTagFilter(t *testing.T) {
+	s := New(Config{})
+	s.store.RecordReport(InboundReport{
+		Passed: true,
+		Results: []InboundResult{
+			{Target: "prod-db", Tags: []string{"prod", "aws"}, Passed: true},
+			{Target: "staging-db", Tags: []string{"staging"}, Passed: true},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/export/csv?tag=staging", nil)
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export csv code = %d, want 200", rec.Code)
+	}
+
+	body := rec.Body.String()
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected header + 1 row for tag staging, got %d lines: %s", len(lines), body)
+	}
+	if !strings.Contains(lines[1], "staging-db") {
+		t.Errorf("expected staging-db in CSV row: %s", lines[1])
+	}
+	if strings.Contains(lines[1], "prod-db") {
+		t.Errorf("did not expect prod-db in CSV row: %s", lines[1])
 	}
 }
 

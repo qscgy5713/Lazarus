@@ -8,6 +8,7 @@ package check
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -44,6 +45,11 @@ func run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, c confi
 		return result
 	}
 
+	if c.Pattern != "" || c.NotPattern != "" {
+		result.Passed, result.Reason = evaluatePattern(raw, c)
+		return result
+	}
+
 	value, err := parseScalar(raw)
 	if err != nil {
 		result.Err = err
@@ -61,8 +67,34 @@ func run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, c confi
 // which queries a file directly) can still share the exact same logic.
 func Evaluate(value int64, c config.Check) (bool, string) { return evaluate(value, c) }
 
+// EvaluatePattern is exported for sqlitecheck to evaluate pattern expectations.
+func EvaluatePattern(raw string, c config.Check) (bool, string) { return evaluatePattern(raw, c) }
+
 // ParseScalar is exported for the same reason as Evaluate.
 func ParseScalar(raw string) (int64, error) { return parseScalar(raw) }
+
+func evaluatePattern(raw string, c config.Check) (bool, string) {
+	trimmed := strings.TrimSpace(raw)
+	if c.Pattern != "" {
+		re, err := regexp.Compile(c.Pattern)
+		if err != nil {
+			return false, fmt.Sprintf("invalid regex %q: %v", c.Pattern, err)
+		}
+		if !re.MatchString(trimmed) {
+			return false, fmt.Sprintf("output %q did not match expected pattern %q", trimmed, c.Pattern)
+		}
+	}
+	if c.NotPattern != "" {
+		re, err := regexp.Compile(c.NotPattern)
+		if err != nil {
+			return false, fmt.Sprintf("invalid regex %q: %v", c.NotPattern, err)
+		}
+		if re.MatchString(trimmed) {
+			return false, fmt.Sprintf("output %q matched prohibited pattern %q (sanitization failed)", trimmed, c.NotPattern)
+		}
+	}
+	return true, ""
+}
 
 func evaluate(value int64, c config.Check) (bool, string) {
 	switch {

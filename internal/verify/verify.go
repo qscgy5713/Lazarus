@@ -40,6 +40,7 @@ const (
 // Result is the verdict for one target.
 type Result struct {
 	Target          string
+	Tags            []string
 	Passed          bool
 	Stage           Stage
 	Err             error
@@ -68,7 +69,7 @@ type Result struct {
 // GPG-encrypted; ignored for a target whose backup isn't.
 func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline bool, keepOnFailure bool, gpgPassphrase string) (result Result) {
 	started := time.Now()
-	result = Result{Target: target.Name, Stage: StageFetch}
+	result = Result{Target: target.Name, Tags: target.Tags, Stage: StageFetch}
 	// A named return value, not a "finish() Result" helper returning a plain
 	// copy: the keep-on-failure defers below mutate result.DebugHint after
 	// deciding whether to tear down the sandbox, and only a named return

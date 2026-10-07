@@ -731,3 +731,94 @@ targets:
 		t.Errorf("format = %q, want pagerduty", cfg.Notify.Format)
 	}
 }
+
+func TestLoadTagsAndSchedule(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: tagged-db
+    engine: postgres
+    path: /backups/db.sql
+    tags: ["prod", "us-east"]
+    schedule: "0 4 * * *"
+    interval: 24h
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	tgt := cfg.Targets[0]
+	if len(tgt.Tags) != 2 || tgt.Tags[0] != "prod" || tgt.Tags[1] != "us-east" {
+		t.Errorf("Tags = %+v, want [prod, us-east]", tgt.Tags)
+	}
+	if tgt.Schedule != "0 4 * * *" {
+		t.Errorf("Schedule = %q, want 0 4 * * *", tgt.Schedule)
+	}
+	if tgt.Interval != 24*time.Hour {
+		t.Errorf("Interval = %v, want 24h", tgt.Interval)
+	}
+}
+
+func TestNotifyEmailFormat(t *testing.T) {
+	path := writeConfig(t, `
+notify:
+  format: email
+  smtp:
+    host: smtp.example.com
+    port: 587
+    from: alerts@example.com
+    to: ["devops@example.com"]
+targets:
+  - name: db
+    engine: sqlite
+    path: /backups/db.sqlite
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Notify.Format != "email" {
+		t.Errorf("format = %q, want email", cfg.Notify.Format)
+	}
+	if cfg.Notify.SMTP == nil || cfg.Notify.SMTP.Host != "smtp.example.com" {
+		t.Errorf("SMTP = %+v, want host=smtp.example.com", cfg.Notify.SMTP)
+	}
+}
+
+func TestPatternExpectations(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: pattern-test
+    engine: postgres
+    path: /backups/db.sql
+    checks:
+      - name: check-clean-email
+        sql: "SELECT email FROM users LIMIT 1"
+        expect_pattern: "^.+@test\\.local$"
+      - name: check-no-real-ssn
+        sql: "SELECT ssn FROM users LIMIT 1"
+        expect_not_pattern: "^\\d{3}-\\d{2}-\\d{4}$"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.Targets[0].Checks) != 2 {
+		t.Fatalf("checks count = %d, want 2", len(cfg.Targets[0].Checks))
+	}
+
+	// Bad regex
+	badPath := writeConfig(t, `
+targets:
+  - name: bad-regex
+    engine: postgres
+    path: /backups/db.sql
+    checks:
+      - name: invalid
+        sql: "SELECT 1"
+        expect_pattern: "[a-z"
+`)
+	_, err = Load(badPath)
+	if err == nil || !strings.Contains(err.Error(), "invalid expect_pattern regex") {
+		t.Errorf("expected regex compilation error, got %v", err)
+	}
+}

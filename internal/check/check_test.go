@@ -134,3 +134,37 @@ func TestParseScalarErrorMentionsWhatItGot(t *testing.T) {
 		t.Errorf("error = %q, want it to quote the unexpected output", err)
 	}
 }
+
+func TestEvaluatePattern(t *testing.T) {
+	// Pattern match success
+	passCheck := config.Check{Pattern: "^.+@test\\.local$"}
+	passed, reason := EvaluatePattern("user123@test.local\n", passCheck)
+	if !passed {
+		t.Errorf("expected pass, got fail: %s", reason)
+	}
+
+	// Pattern match failure
+	failed, reason := EvaluatePattern("user123@realcompany.com\n", passCheck)
+	if failed {
+		t.Errorf("expected fail for non-matching pattern, got passed")
+	}
+	if !strings.Contains(reason, "did not match expected pattern") {
+		t.Errorf("unexpected failure reason: %s", reason)
+	}
+
+	// NotPattern (prohibited pattern) success (clean output)
+	cleanCheck := config.Check{NotPattern: "^\\d{3}-\\d{2}-\\d{4}$"}
+	passed, reason = EvaluatePattern("REDACTED-SSN\n", cleanCheck)
+	if !passed {
+		t.Errorf("expected pass for non-matching prohibited pattern, got fail: %s", reason)
+	}
+
+	// NotPattern failure (leak detected)
+	leaked, reason := EvaluatePattern("123-45-6789\n", cleanCheck)
+	if leaked {
+		t.Errorf("expected fail when prohibited pattern matched")
+	}
+	if !strings.Contains(reason, "sanitization failed") {
+		t.Errorf("expected reason to mention sanitization failed, got: %s", reason)
+	}
+}

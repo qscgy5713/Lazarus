@@ -202,7 +202,8 @@ func (s *Server) handlePostReport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetTargets(w http.ResponseWriter, r *http.Request) {
-	targets := s.store.GetTargets()
+	tag := r.URL.Query().Get("tag")
+	targets := s.store.GetTargetsFiltered(tag)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(targets)
 }
@@ -283,7 +284,8 @@ func (s *Server) handleTriggerTarget(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	targetFilter := r.URL.Query().Get("target")
 	statusFilter := r.URL.Query().Get("status")
-	history := s.store.GetAuditHistory(targetFilter, statusFilter, 1000)
+	tagFilter := r.URL.Query().Get("tag")
+	history := s.store.GetAuditHistory(targetFilter, statusFilter, tagFilter, 1000)
 
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	filename := fmt.Sprintf("lazarus-audit-%s.csv", time.Now().UTC().Format("20060102-150405"))
@@ -295,6 +297,7 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 
 	_ = writer.Write([]string{
 		"Target",
+		"Tags",
 		"DrilledAt",
 		"Passed",
 		"Stage",
@@ -315,6 +318,7 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = writer.Write([]string{
 			sanitizeCSVField(h.Target),
+			sanitizeCSVField(strings.Join(h.Tags, "; ")),
 			h.DrilledAt.Format(time.RFC3339),
 			passedStr,
 			sanitizeCSVField(h.Stage),

@@ -16,6 +16,7 @@ type InboundReport struct {
 
 type InboundResult struct {
 	Target            string         `json:"target"`
+	Tags              []string       `json:"tags,omitempty"`
 	Passed            bool           `json:"passed"`
 	Stage             string         `json:"stage"`
 	Error             string         `json:"error,omitempty"`
@@ -49,6 +50,7 @@ const (
 // TargetRecord represents a tracked database target and its most recent drill result.
 type TargetRecord struct {
 	Name           string          `json:"name"`
+	Tags           []string        `json:"tags,omitempty"`
 	Status         TargetStatus    `json:"status"`
 	Muted          bool            `json:"muted"`
 	TriggerPending bool            `json:"trigger_pending,omitempty"`
@@ -68,6 +70,7 @@ type TargetRecord struct {
 
 type HistoryRecord struct {
 	Target        string    `json:"target,omitempty"`
+	Tags          []string  `json:"tags,omitempty"`
 	DrilledAt     time.Time `json:"drilled_at"`
 	Passed        bool      `json:"passed"`
 	Stage         string    `json:"stage,omitempty"`

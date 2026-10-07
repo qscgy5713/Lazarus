@@ -115,6 +115,11 @@ func runCheck(ctx context.Context, path string, c config.Check) check.Result {
 		return result
 	}
 
+	if c.Pattern != "" || c.NotPattern != "" {
+		result.Passed, result.Reason = check.EvaluatePattern(raw, c)
+		return result
+	}
+
 	value, err := check.ParseScalar(raw)
 	if err != nil {
 		result.Err = err

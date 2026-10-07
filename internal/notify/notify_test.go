@@ -7,11 +7,15 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/smtp"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"lazarus/internal/backup"
+	"lazarus/internal/check"
+	"lazarus/internal/config"
 	"lazarus/internal/verify"
 )
 
@@ -432,5 +436,145 @@ func TestSendRetriesOnServerError(t *testing.T) {
 	}
 	if attempts != 2 {
 		t.Errorf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestShouldSendEmail(t *testing.T) {
+	smtpCfg := &config.SMTPConfig{
+		Host: "smtp.example.com",
+		Port: 587,
+		From: "lazarus@example.com",
+		To:   []string{"admin@example.com"},
+	}
+
+	nNilSMTP := New("", FormatEmail, WhenAlways)
+	if nNilSMTP.ShouldSend([]verify.Result{passing("db")}) {
+		t.Errorf("ShouldSend() = true, want false when SMTP config is nil")
+	}
+
+	nWithSMTP := New("", FormatEmail, WhenOnFailure).WithSMTP(smtpCfg)
+	if nWithSMTP.ShouldSend([]verify.Result{passing("db")}) {
+		t.Errorf("ShouldSend() = true, want false on passing results with WhenOnFailure")
+	}
+	if !nWithSMTP.ShouldSend([]verify.Result{failing("db", verify.StageRestore, "err")}) {
+		t.Errorf("ShouldSend() = false, want true on failing results with WhenOnFailure")
+	}
+}
+
+func TestSendEmailFormat(t *testing.T) {
+	smtpCfg := &config.SMTPConfig{
+		Host:     "smtp.example.com",
+		Port:     587,
+		From:     "sender@example.com",
+		To:       []string{"ops@example.com"},
+		Username: "ops_user",
+		Password: "secret_password",
+	}
+
+	var sentAddr, sentFrom string
+	var sentTo []string
+	var sentMsg []byte
+
+	mockSender := func(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
+		sentAddr = addr
+		sentFrom = from
+		sentTo = to
+		sentMsg = msg
+		return nil
+	}
+
+	n := New("", FormatEmail, WhenAlways).WithSMTP(smtpCfg)
+	n.smtpSender = mockSender
+
+	results := []verify.Result{
+		{
+			Target:          "prod-postgres",
+			Tags:            []string{"prod", "us-east"},
+			Passed:          true,
+			Stage:           verify.StageDone,
+			Duration:        1200 * time.Millisecond,
+			RestoreDuration: 800 * time.Millisecond,
+			Backup: &backup.File{
+				Path: "/backups/prod.sql",
+				Size: 1024 * 1024 * 50,
+			},
+			Checks: []check.Result{
+				{Name: "users table count", Passed: true, Value: 1000},
+			},
+		},
+	}
+
+	err := n.Send(context.Background(), results)
+	if err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	if sentAddr != "smtp.example.com:587" {
+		t.Errorf("sentAddr = %q, want smtp.example.com:587", sentAddr)
+	}
+	if sentFrom != "sender@example.com" {
+		t.Errorf("sentFrom = %q, want sender@example.com", sentFrom)
+	}
+	if len(sentTo) != 1 || sentTo[0] != "ops@example.com" {
+		t.Errorf("sentTo = %v, want [ops@example.com]", sentTo)
+	}
+
+	msgStr := string(sentMsg)
+	if !strings.Contains(msgStr, "Subject: [Lazarus] ✅ All Database Restorations Passed") {
+		t.Errorf("email missing expected subject: %s", msgStr)
+	}
+	if !strings.Contains(msgStr, "Content-Type: text/html; charset=UTF-8") {
+		t.Errorf("email missing text/html header")
+	}
+	if !strings.Contains(msgStr, "prod-postgres") {
+		t.Errorf("email body missing target name: %s", msgStr)
+	}
+	if !strings.Contains(msgStr, "#prod") || !strings.Contains(msgStr, "#us-east") {
+		t.Errorf("email body missing tags: %s", msgStr)
+	}
+}
+
+func TestSendEmailFailureReport(t *testing.T) {
+	smtpCfg := &config.SMTPConfig{
+		Host: "smtp.example.com",
+		Port: 25,
+		From: "sender@example.com",
+		To:   []string{"alerts@example.com"},
+	}
+
+	var sentMsg []byte
+	mockSender := func(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
+		sentMsg = msg
+		return nil
+	}
+
+	n := New("", FormatEmail, WhenAlways).WithSMTP(smtpCfg)
+	n.smtpSender = mockSender
+
+	results := []verify.Result{
+		{
+			Target:    "broken-mysql",
+			Tags:      []string{"staging"},
+			Passed:    false,
+			Stage:     verify.StageRestore,
+			Err:       errors.New("table corrupted"),
+			DebugHint: "check disk space or schema sync",
+		},
+	}
+
+	err := n.Send(context.Background(), results)
+	if err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	msgStr := string(sentMsg)
+	if !strings.Contains(msgStr, "Subject: [Lazarus] 🚨 1/1 Database Restorations FAILED") {
+		t.Errorf("email missing failure subject: %s", msgStr)
+	}
+	if !strings.Contains(msgStr, "table corrupted") {
+		t.Errorf("email body missing error message")
+	}
+	if !strings.Contains(msgStr, "check disk space or schema sync") {
+		t.Errorf("email body missing debug hint")
 	}
 }

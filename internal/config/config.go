@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -65,7 +66,7 @@ type Notify struct {
 	// LAZARUS_API_KEY environment variable overrides it.
 	APIKey string `yaml:"api_key"`
 
-	// Format is "slack" (default), "discord", "generic" (raw JSON), or "lazarus".
+	// Format is "slack" (default), "discord", "generic" (raw JSON), "lazarus", "pagerduty", or "email".
 	Format string `yaml:"format"`
 
 	// When is "on_failure" (default), "always", or "never".
@@ -73,6 +74,19 @@ type Notify struct {
 	// "always" is worth considering: if Lazarus itself stops running, no
 	// message looks exactly like every backup being fine.
 	When string `yaml:"when"`
+
+	// SMTP configures direct email delivery when format is "email".
+	SMTP *SMTPConfig `yaml:"smtp"`
+}
+
+// SMTPConfig configures email delivery via SMTP.
+type SMTPConfig struct {
+	Host     string   `yaml:"host"`
+	Port     int      `yaml:"port"`
+	Username string   `yaml:"username"`
+	Password string   `yaml:"password"`
+	From     string   `yaml:"from"`
+	To       []string `yaml:"to"`
 }
 
 const (
@@ -153,6 +167,15 @@ type Target struct {
 	// CPUs sets the container CPU quota (e.g. "1.5", "2").
 	CPUs string `yaml:"cpus"`
 
+	// Tags allows categorizing and filtering targets (e.g. ["prod", "us-east"]).
+	Tags []string `yaml:"tags"`
+
+	// Schedule is an optional cron expression (e.g. "0 4 * * *") for daemon mode.
+	Schedule string `yaml:"schedule"`
+
+	// Interval is an optional duration interval (e.g. "24h") for daemon mode.
+	Interval time.Duration `yaml:"interval"`
+
 	Checks []Check `yaml:"checks"`
 }
 
@@ -182,9 +205,11 @@ type Check struct {
 	Name    string `yaml:"name"`
 	SQL     string `yaml:"sql"`
 	Command string `yaml:"command"`
-	Min     *int64 `yaml:"expect_min"`
-	Max     *int64 `yaml:"expect_max"`
-	Equal   *int64 `yaml:"expect_equal"`
+	Min        *int64 `yaml:"expect_min"`
+	Max        *int64 `yaml:"expect_max"`
+	Equal      *int64 `yaml:"expect_equal"`
+	Pattern    string `yaml:"expect_pattern"`     // regex that the output must match
+	NotPattern string `yaml:"expect_not_pattern"` // regex that the output must NOT match
 }
 
 const (
@@ -348,9 +373,9 @@ func (c *Config) applyNotifyDefaults() error {
 		c.Notify.Format = defaultNotifyFormat
 	}
 	switch c.Notify.Format {
-	case "slack", "discord", "telegram", "teams", "generic", "lazarus", "pagerduty":
+	case "slack", "discord", "telegram", "teams", "generic", "lazarus", "pagerduty", "email":
 	default:
-		return fmt.Errorf("notify.format %q is not slack, discord, telegram, teams, generic, lazarus or pagerduty", c.Notify.Format)
+		return fmt.Errorf("notify.format %q is not slack, discord, telegram, teams, generic, lazarus, pagerduty or email", c.Notify.Format)
 	}
 
 	if c.Notify.When == "" {
@@ -377,16 +402,29 @@ func validateCheck(targetName string, index int, c *Check) error {
 	}
 
 	expectations := 0
-	for _, set := range []bool{c.Min != nil, c.Max != nil, c.Equal != nil} {
+	for _, set := range []bool{c.Min != nil, c.Max != nil, c.Equal != nil, c.Pattern != "", c.NotPattern != ""} {
 		if set {
 			expectations++
 		}
 	}
 	if expectations == 0 {
-		return fmt.Errorf("target %q check %q: needs one of expect_min, expect_max or expect_equal", targetName, c.Name)
+		return fmt.Errorf("target %q check %q: needs one of expect_min, expect_max, expect_equal, expect_pattern or expect_not_pattern", targetName, c.Name)
+	}
+	if expectations > 1 && (c.Pattern != "" || c.NotPattern != "") && (c.Equal != nil || c.Min != nil || c.Max != nil) {
+		return fmt.Errorf("target %q check %q: pattern expectations cannot be combined with numeric expectations", targetName, c.Name)
 	}
 	if c.Equal != nil && (c.Min != nil || c.Max != nil) {
 		return fmt.Errorf("target %q check %q: expect_equal can't be combined with expect_min/expect_max", targetName, c.Name)
+	}
+	if c.Pattern != "" {
+		if _, err := regexp.Compile(c.Pattern); err != nil {
+			return fmt.Errorf("target %q check %q: invalid expect_pattern regex: %w", targetName, c.Name, err)
+		}
+	}
+	if c.NotPattern != "" {
+		if _, err := regexp.Compile(c.NotPattern); err != nil {
+			return fmt.Errorf("target %q check %q: invalid expect_not_pattern regex: %w", targetName, c.Name, err)
+		}
 	}
 	return nil
 }

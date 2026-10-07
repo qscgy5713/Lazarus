@@ -25,7 +25,7 @@ notify:
   # Optional bearer token for webhook authentication (or set LAZARUS_API_KEY).
   api_key: ""
 
-  # slack (default) | discord | telegram | teams | generic | lazarus | pagerduty
+  # slack (default) | discord | telegram | teams | generic | lazarus | pagerduty | email
   format: slack
 
   # on_failure (default) | always | never
@@ -35,9 +35,26 @@ notify:
   # message on every run turns that silence into a signal.
   when: on_failure
 
+  # Native SMTP HTML Email report (active when format: email)
+  # smtp:
+  #   host: smtp.mailgun.org
+  #   port: 587
+  #   username: postmaster@mg.example.com
+  #   password: secret_password
+  #   from: lazarus-alerts@example.com
+  #   to:
+  #     - dba-oncall@example.com
+  #     - reliability-team@example.com
+
 targets:
   - name: production-postgres
     engine: postgres
+
+    # Target tags for multi-environment grouping & Control Plane filtering
+    tags: [prod, aws, postgres]
+
+    # Periodic verification interval when running in daemon mode (--daemon)
+    interval: 2h
 
     # Option A: Native S3 / Cloudflare R2 / MinIO pull (No aws-cli needed!)
     # s3:
@@ -105,6 +122,16 @@ targets:
       - name: no half-migrated schema
         sql: SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'
         expect_min: 10
+
+      # Positive Regex Assertion: verify release version tag conforms to semver
+      - name: schema version format is valid
+        sql: SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1
+        expect_pattern: "^v?\\d+\\.\\d+\\.\\d+"
+
+      # Data Sanitization & Leakage Guard: ensure staging/analytics backups don't leak unmasked emails
+      - name: customer emails are properly masked
+        sql: SELECT email FROM customers WHERE email LIKE '%@gmail.com' LIMIT 1
+        expect_not_pattern: "[a-zA-Z0-9._%+-]+@gmail\\.com"
 
   - name: production-mysql
     engine: mysql
