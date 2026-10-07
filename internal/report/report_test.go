@@ -192,3 +192,46 @@ func TestJSONOmitsRestoreDurationMsWhenZero(t *testing.T) {
 		t.Errorf("restore_duration_ms should be omitted when never measured, got %+v", decoded[0])
 	}
 }
+
+func TestStepSummary(t *testing.T) {
+	results := []verify.Result{
+		{
+			Target:          "prod-postgres",
+			Passed:          true,
+			Stage:           verify.StageDone,
+			Duration:        2500 * time.Millisecond,
+			RestoreDuration: 1200 * time.Millisecond,
+			Backup:          &backup.File{Path: "/backups/prod.sql.gz", Size: 1048576},
+			Checks: []check.Result{
+				{Name: "user_count", Passed: true, Value: 500},
+			},
+		},
+		{
+			Target:   "staging-mysql",
+			Passed:   false,
+			Stage:    verify.StageRestore,
+			Duration: 800 * time.Millisecond,
+			Err:      errors.New("syntax error in SQL dump"),
+			LogsTail: "mysqld: Table 'broken' doesn't exist\nAborting",
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := StepSummary(&buf, results); err != nil {
+		t.Fatalf("StepSummary returned error: %v", err)
+	}
+
+	out := buf.String()
+	for _, expected := range []string{
+		"## 🛡️ Lazarus Disaster Recovery Drill Summary",
+		"DRILLS FAILED",
+		"| `prod-postgres` | ✅ PASS |",
+		"| `staging-mysql` | ❌ FAIL |",
+		"mysqld: Table 'broken' doesn't exist",
+		"syntax error in SQL dump",
+	} {
+		if !strings.Contains(out, expected) {
+			t.Errorf("StepSummary output missing %q, got:\n%s", expected, out)
+		}
+	}
+}

@@ -291,7 +291,38 @@ targets:
       # secret_access_key: "..."         # 亦可透過環境變數 AWS_SECRET_ACCESS_KEY 注入
 ```
 
-#### 方式二：自訂 Shell 指令（`fetch_command`）
+#### 方式二：原生 Google Cloud Storage（GCS，免安裝 gcloud CLI）
+
+Lazarus 內建純 Go JWT/OAuth2 服務帳戶認證客戶端，支援直接拉取 GCS Bucket 物件：
+
+```yaml
+targets:
+  - name: gcp-postgres
+    engine: postgres
+    path: /backups/postgres/gcp-latest.sql.gz
+    gcs:
+      bucket: my-company-backups
+      object: postgres/gcp-latest.sql.gz
+      # credentials_json: '{"type":"service_account",...}' # 亦可透過 GOOGLE_APPLICATION_CREDENTIALS 注入
+```
+
+#### 方式三：原生 Azure Blob Storage（免安裝 az CLI）
+
+Lazarus 內建純 Go Azure SharedKey HMAC-SHA256 認證客戶端，支援直接拉取 Azure 儲存體容器中的 Blob：
+
+```yaml
+targets:
+  - name: azure-mysql
+    engine: mysql
+    path: /backups/mysql/azure-latest.sql.gz
+    azure:
+      account_name: mybackupstorage
+      container: mysql-backups
+      blob: azure-latest.sql.gz
+      # account_key: "..."               # 亦可透過環境變數 AZURE_STORAGE_KEY 注入
+```
+
+#### 方式四：自訂 Shell 指令（`fetch_command`）
 
 `fetch_command` 讓你在 `path` 被查找之前，先跑一段 shell 指令把備份抓到本機：
 
@@ -337,6 +368,7 @@ targets:
 | MySQL 純 SQL | `mysqldump` 的輸出 |
 | SQLite | 資料庫檔案本身的完整複本（不是 `.dump` 出來的 SQL 文字），沒有伺服器可以匯入，本來就是一個獨立檔案 |
 | Redis RDB | Redis 二進位快照檔（`.rdb`），自動偵測魔術位元組 `REDIS`，透過拋棄式容器加載並執行完整性校驗 |
+| MongoDB Archive | MongoDB BSON 封裝檔（`.archive` 或 `.archive.gz`），透過拋棄式 `mongo:7.0` 容器以 `mongorestore` 還原並以 `mongosh` 執行斷言 |
 | gzip 壓縮 | 以上任一種加上 `.gz`，串流解壓縮，不佔額外磁碟空間 |
 | Zstandard (zstd) 壓縮 | 以上任一種加上 `.zst` 或 `.zstd`，超高速串流解壓縮，解壓速度比 gzip 快 3~5 倍 |
 | GPG 加密 | 以上任一種（含已經 gzip / zstd 壓縮過的）加上 `.gpg`/`.pgp`/`.asc`，自動偵測並解密 |
@@ -604,6 +636,8 @@ docker compose run --rm --entrypoint sh \
 - **RTO 還原耗時歷史趨勢圖 (Historical RTO Sparkline)**：在各目標卡片內建純 SVG 輕量趨勢曲線圖，即時呈現過去數次演練之還原耗時波動與成功/失敗節點。
 - **維護模式與警報靜音 (Mute Alerts)**：當資料庫進行排程升級或停機維護時，可於 Web UI 或透過 API (`POST /api/v1/targets/{name}/mute`) 將目標一鍵切換為維護靜音模式，避免觸發誤報，並即時於狀態卡片與 Prometheus 指標同步。
 - **歷史演練審計清單一鍵匯出 CSV (`/api/v1/export/csv`)**：提供歷史還原演練紀錄的 CSV 格式一鍵下載，包含演練時間戳、標籤、資料庫名稱、還原耗時、各項 checks 驗證筆數與斷言結果，支援 `?tag=` 篩選匯出，便於合規存檔與稽核檢驗。
+- **企業合規審計原生 PDF 證書匯出 (`/api/v1/export/certificate.pdf`)**：純 Go 原生產出符合 PDF 1.4 標準的正式災難復原演練證書，具備動態 SHA-256 防篡改數位簽章、SLA 達標率分析與各資料庫目標完整驗證軌跡，符合 SOC 2、ISO 27001 與 HIPAA 合規審計要求。
+- **容器失敗日誌回溯 (Container Stderr Tail)**：演練失敗時自動提取容器末 50 行 Stderr 日誌，直接呈現於 Web UI 終端機抽屜與 Slack/Teams 告警訊息中，無需手動 SSH 進主機即可一眼掌握崩潰原因。
 - **Dead Man's Snitch（逾期靜默失效偵測）**：傳統監控只在腳本報錯時發出警報，但如果 crontab 被誤刪、伺服器離線或備份腳本死當，監控系統根本收不到任何通知。Control Plane 在目標超過預期時間（預設 26 小時）未收到還原報告時，自動標記為 `OVERDUE` 並亮起警報（處於維護靜音中的目標除外）。
 - **合規稽核證明一鍵產生 (Audit Proof)**：內建合規報告匯出功能，將歷史還原紀錄整合成具時間戳記與資料筆數校驗的災難復原演練報告，直接提供給 SOC 2 Type II、ISO 27001 或金融監管稽核人員。
 - **Prometheus 指標暴露 (`/metrics`) 與開箱即用 Grafana 儀表板**：原生暴露標準 Prometheus Exporter 端點，包含各目標還原耗時 (`lazarus_target_restore_duration_seconds`)、健康狀態 (`lazarus_target_status`，含 muted=3) 與統計指標。專案於 [`examples/grafana/lazarus-dashboard.json`](examples/grafana/lazarus-dashboard.json) 提供預先配置好的 Grafana 視覺化儀表板，支援一鍵匯入。
@@ -708,6 +742,13 @@ jobs:
 ### Action 輸出
 
 - `passed`: `true` 或 `false`。可用於後續工作步驟（例如演練失敗時觸發 PagerDuty 或建立 GitHub Issue）。
+
+### GitHub Actions Step Summary 原生儀表板
+
+Lazarus 原生支援 GitHub Actions 的 Step Summary。只要在 Actions 環境中執行，Lazarus 會自動偵測 `$GITHUB_STEP_SUMMARY` 並產生完整的 Markdown 演練審計表格，在 GitHub 工作階段摘要中直觀展示：
+- 總體驗練合格狀態（`:white_check_mark: ALL DRILLS PASSED` 或 `:x: DRILLS FAILED`）
+- 目標詳細表格（目標名稱、通過狀態、還原時間、備份體積、斷言通過數）
+- 失敗目標的詳細錯誤訊息、斷言失敗原因以及容器 Stderr 日誌末尾回溯折疊區塊（`<details>`）
 
 ---
 

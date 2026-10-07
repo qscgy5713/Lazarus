@@ -28,6 +28,7 @@ type InboundResult struct {
 	RestoreDurationMs int64          `json:"restore_duration_ms,omitempty"`
 	Checks            []InboundCheck `json:"checks,omitempty"`
 	DebugHint         string         `json:"debug_hint,omitempty"`
+	LogsTail          string         `json:"logs_tail,omitempty"`
 }
 
 type InboundCheck struct {
@@ -64,6 +65,9 @@ type TargetRecord struct {
 	LastBackupAge  string          `json:"last_backup_age,omitempty"`
 	LastDurationMs int64           `json:"last_duration_ms"`
 	LastRestoreMs  int64           `json:"last_restore_ms"`
+	LastLogsTail   string          `json:"last_logs_tail,omitempty"`
+	SLARTO         string          `json:"sla_rto,omitempty"`
+	SLAPassed      bool            `json:"sla_passed,omitempty"`
 	LastChecks     []InboundCheck  `json:"last_checks,omitempty"`
 	RecentHistory  []HistoryRecord `json:"recent_history,omitempty"`
 }
@@ -82,12 +86,14 @@ type HistoryRecord struct {
 	ChecksPassed  int       `json:"checks_passed,omitempty"`
 	ChecksFailed  int       `json:"checks_failed,omitempty"`
 	Error         string    `json:"error,omitempty"`
+	LogsTail      string    `json:"logs_tail,omitempty"`
 }
 
 type Summary struct {
-	TotalTargets int `json:"total_targets"`
-	Healthy      int `json:"healthy"`
-	Failed       int `json:"failed"`
-	Overdue      int `json:"overdue"`
-	Muted        int `json:"muted"`
+	TotalTargets  int     `json:"total_targets"`
+	Healthy       int     `json:"healthy"`
+	Failed        int     `json:"failed"`
+	Overdue       int     `json:"overdue"`
+	Muted         int     `json:"muted"`
+	SLAPercentage float64 `json:"sla_percentage"`
 }

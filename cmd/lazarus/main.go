@@ -123,6 +123,7 @@ func runOnce(ctx context.Context, cfg *config.Config, targets []config.Target, s
 	}
 
 	sendNotification(ctx, cfg.Notify, results)
+	_ = report.WriteGitHubStepSummaryIfPresent(results)
 	return allPassed
 }
 

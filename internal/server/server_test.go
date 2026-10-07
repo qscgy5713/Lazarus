@@ -586,3 +586,29 @@ func TestTriggerTarget(t *testing.T) {
 		t.Errorf("trigger non-existent target code = %d, want 404", recNotFound.Code)
 	}
 }
+
+func TestExportPDF(t *testing.T) {
+	s := New(Config{DemoMode: true})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/export/certificate.pdf", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export pdf status = %d, want 200", rec.Code)
+	}
+
+	contentType := rec.Header().Get("Content-Type")
+	if contentType != "application/pdf" {
+		t.Errorf("Content-Type = %q, want 'application/pdf'", contentType)
+	}
+
+	body := rec.Body.Bytes()
+	if !bytes.HasPrefix(body, []byte("%PDF-1.4")) {
+		t.Errorf("expected PDF header %%PDF-1.4, got: %q", string(body[:min(10, len(body))]))
+	}
+
+	if !strings.Contains(string(body), "LAZARUS DISASTER RECOVERY DRILL CERTIFICATE") {
+		t.Errorf("PDF missing certificate header string")
+	}
+}

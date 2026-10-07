@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"lazarus/internal/certpdf"
 )
 
 type Config struct {
@@ -122,6 +124,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/reports", s.handleGetReports)
 	s.mux.HandleFunc("GET /api/v1/summary", s.handleGetSummary)
 	s.mux.HandleFunc("GET /api/v1/export/csv", s.handleExportCSV)
+	s.mux.HandleFunc("GET /api/v1/export/certificate.pdf", s.handleExportPDF)
 }
 
 func (s *Server) checkAuth(r *http.Request) bool {
@@ -332,6 +335,65 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 			sanitizeCSVField(h.Error),
 		})
 	}
+}
+
+func (s *Server) handleExportPDF(w http.ResponseWriter, r *http.Request) {
+	tagFilter := r.URL.Query().Get("tag")
+	targets := s.store.GetTargetsFiltered(tagFilter)
+	summary := s.store.GetSummary()
+
+	var targetAudits []certpdf.TargetAudit
+	for _, t := range targets {
+		restoreDurationStr := "-"
+		if t.LastRestoreMs > 0 {
+			restoreDurationStr = fmt.Sprintf("%dms", t.LastRestoreMs)
+		}
+		backupSizeStr := t.LastBackupSize
+		if backupSizeStr == "" {
+			backupSizeStr = "-"
+		}
+		checksPassed := 0
+		for _, c := range t.LastChecks {
+			if c.Passed {
+				checksPassed++
+			}
+		}
+
+		targetAudits = append(targetAudits, certpdf.TargetAudit{
+			Name:            t.Name,
+			Passed:          t.LastPassed,
+			Stage:           t.LastStage,
+			RestoreDuration: restoreDurationStr,
+			BackupSize:      backupSizeStr,
+			BackupAge:       t.LastBackupAge,
+			ChecksPassed:    checksPassed,
+			ChecksTotal:     len(t.LastChecks),
+			Error:           t.LastError,
+		})
+	}
+
+	host := "lazarus-control-plane"
+	if len(targets) > 0 && targets[0].LastHostname != "" {
+		host = targets[0].LastHostname
+	}
+
+	certData := certpdf.CertificateData{
+		Hostname:      host,
+		GeneratedAt:   time.Now().UTC(),
+		TotalTargets:  summary.TotalTargets,
+		PassedTargets: summary.Healthy,
+		SLAPercentage: summary.SLAPercentage,
+		Targets:       targetAudits,
+	}
+
+	pdfData := certpdf.Generate(certData)
+
+	filename := fmt.Sprintf("lazarus-audit-certificate-%s.pdf", time.Now().UTC().Format("20060102-150405"))
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.Header().Set("Content-Length", strconv.Itoa(len(pdfData)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(pdfData)
 }
 
 // sanitizeCSVField prevents CSV Formula Injection when opened in Excel/Sheets.

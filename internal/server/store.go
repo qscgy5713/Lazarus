@@ -78,6 +78,7 @@ func (s *Store) RecordReport(report InboundReport) {
 		rec.LastDurationMs = res.DurationMs
 		rec.LastRestoreMs = res.RestoreDurationMs
 		rec.LastChecks = res.Checks
+		rec.LastLogsTail = res.LogsTail
 
 		if res.Passed {
 			rec.Status = StatusHealthy
@@ -111,6 +112,7 @@ func (s *Store) RecordReport(report InboundReport) {
 			ChecksPassed:  checksPassed,
 			ChecksFailed:  checksFailed,
 			Error:         res.Error,
+			LogsTail:      res.LogsTail,
 		})
 		if len(rec.RecentHistory) > 20 {
 			rec.RecentHistory = rec.RecentHistory[len(rec.RecentHistory)-20:]
@@ -207,6 +209,9 @@ func (s *Store) GetSummary() Summary {
 		case StatusMuted:
 			sum.Muted++
 		}
+	}
+	if sum.TotalTargets > 0 {
+		sum.SLAPercentage = float64(sum.Healthy) / float64(sum.TotalTargets) * 100.0
 	}
 	return sum
 }

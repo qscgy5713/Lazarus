@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 	"time"
 
 	"lazarus/internal/backup"
@@ -149,4 +151,95 @@ func tally(results []verify.Result) (passed, failed int) {
 		}
 	}
 	return passed, failed
+}
+
+// StepSummary writes a GitHub Flavored Markdown summary suitable for GITHUB_STEP_SUMMARY.
+func StepSummary(w io.Writer, results []verify.Result) error {
+	passed, failed := tally(results)
+	total := passed + failed
+
+	fmt.Fprintf(w, "## 🛡️ Lazarus Disaster Recovery Drill Summary\n\n")
+
+	if failed == 0 {
+		fmt.Fprintf(w, "> **Result**: :white_check_mark: **ALL DRILLS PASSED** (%d/%d targets verified successfully)\n\n", passed, total)
+	} else {
+		fmt.Fprintf(w, "> **Result**: :x: **DRILLS FAILED** (%d passed, %d failed out of %d targets)\n\n", passed, failed, total)
+	}
+
+	fmt.Fprintf(w, "| Target | Status | Stage | Duration | Restore Time | Backup Size | Checks |\n")
+	fmt.Fprintf(w, "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |\n")
+
+	for _, r := range results {
+		status := "✅ PASS"
+		if !r.Passed {
+			status = "❌ FAIL"
+		}
+		duration := r.Duration.Round(time.Millisecond).String()
+		restoreDuration := "-"
+		if r.RestoreDuration > 0 {
+			restoreDuration = r.RestoreDuration.Round(time.Millisecond).String()
+		}
+		backupSize := "-"
+		if r.Backup != nil {
+			backupSize = backup.HumanSize(r.Backup.Size)
+		}
+		checksPassed := 0
+		for _, c := range r.Checks {
+			if c.Passed {
+				checksPassed++
+			}
+		}
+		checksStr := fmt.Sprintf("%d/%d", checksPassed, len(r.Checks))
+		if len(r.Checks) == 0 {
+			checksStr = "none"
+		}
+
+		fmt.Fprintf(w, "| `%s` | %s | `%s` | %s | %s | %s | %s |\n",
+			r.Target, status, r.Stage, duration, restoreDuration, backupSize, checksStr)
+	}
+	fmt.Fprintln(w)
+
+	for _, r := range results {
+		if !r.Passed {
+			fmt.Fprintf(w, "### ⚠️ Failure Details: `%s`\n\n", r.Target)
+			if r.Err != nil {
+				fmt.Fprintf(w, "**Error**: `%s`\n\n", r.Err.Error())
+			}
+			if len(r.Checks) > 0 {
+				fmt.Fprintf(w, "**Failed Assertions:**\n")
+				for _, c := range r.Checks {
+					if !c.Passed {
+						fmt.Fprintf(w, "- Check `%s`: %s\n", c.Name, c.Reason)
+					}
+				}
+				fmt.Fprintln(w)
+			}
+			if r.LogsTail != "" {
+				fmt.Fprintf(w, "<details><summary><b>Container Stderr / Logs Tail (Last 50 lines)</b></summary>\n\n```text\n%s\n```\n</details>\n\n", strings.TrimSpace(r.LogsTail))
+			}
+			if r.DebugHint != "" {
+				fmt.Fprintf(w, "> **Debug Command**: `%s`\n\n", r.DebugHint)
+			}
+		}
+	}
+
+	fmt.Fprintf(w, "---\n*Drill verified by [Lazarus](https://github.com/chen-yuju/Lazarus) at %s*\n", time.Now().UTC().Format(time.RFC3339))
+	return nil
+}
+
+// WriteGitHubStepSummaryIfPresent checks if GITHUB_STEP_SUMMARY environment variable
+// is set and writes the Markdown summary to that file path.
+func WriteGitHubStepSummaryIfPresent(results []verify.Result) error {
+	summaryPath := os.Getenv("GITHUB_STEP_SUMMARY")
+	if summaryPath == "" {
+		return nil
+	}
+
+	f, err := os.OpenFile(summaryPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("open GITHUB_STEP_SUMMARY: %w", err)
+	}
+	defer f.Close()
+
+	return StepSummary(f, results)
 }

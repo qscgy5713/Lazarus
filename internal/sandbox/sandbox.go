@@ -145,6 +145,19 @@ func (s *Sandbox) Exec(ctx context.Context, stdin string, args ...string) (strin
 	return string(out), nil
 }
 
+// LogsTail fetches the last N lines of stdout/stderr from the sandbox container.
+func (s *Sandbox) LogsTail(ctx context.Context, lines int) string {
+	if s == nil || s.Name == "" || lines <= 0 {
+		return ""
+	}
+	cmd := exec.CommandContext(ctx, "docker", "logs", "--tail", fmt.Sprintf("%d", lines), s.Name)
+	out, err := cmd.CombinedOutput()
+	if err != nil && len(out) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func (s *Sandbox) waitReady(ctx context.Context) error {
 	deadline := time.Now().Add(readyTimeout)
 	var lastErr error

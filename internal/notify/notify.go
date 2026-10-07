@@ -245,9 +245,18 @@ type slackPayload struct {
 }
 
 type slackBlock struct {
-	Type   string         `json:"type"`
-	Text   *slackTextObj  `json:"text,omitempty"`
-	Fields []slackTextObj `json:"fields,omitempty"`
+	Type     string         `json:"type"`
+	Text     *slackTextObj  `json:"text,omitempty"`
+	Fields   []slackTextObj `json:"fields,omitempty"`
+	Elements []slackElement `json:"elements,omitempty"`
+}
+
+type slackElement struct {
+	Type  string        `json:"type"`
+	Text  *slackTextObj `json:"text,omitempty"`
+	URL   string        `json:"url,omitempty"`
+	Value string        `json:"value,omitempty"`
+	Style string        `json:"style,omitempty"`
 }
 
 type slackTextObj struct {
@@ -274,6 +283,30 @@ func buildSlack(results []verify.Result) slackPayload {
 			Text: &slackTextObj{Type: "mrkdwn", Text: fmt.Sprintf("*Status Summary:*\n```\n%s\n```", truncate(summaryText))},
 		},
 	}
+
+	for _, r := range results {
+		if !r.Passed && r.LogsTail != "" {
+			blocks = append(blocks, slackBlock{
+				Type: "section",
+				Text: &slackTextObj{
+					Type: "mrkdwn",
+					Text: fmt.Sprintf("*Container Logs Tail (%s):*\n```\n%s\n```", r.Target, truncate(r.LogsTail)),
+				},
+			})
+		}
+	}
+
+	blocks = append(blocks, slackBlock{
+		Type: "actions",
+		Elements: []slackElement{
+			{
+				Type:  "button",
+				Text:  &slackTextObj{Type: "plain_text", Text: "⚡ View Drills"},
+				URL:   "http://localhost:8080",
+				Style: "primary",
+			},
+		},
+	})
 
 	return slackPayload{
 		Text:   summaryText,
@@ -363,6 +396,7 @@ type genericResult struct {
 	RestoreDurationMs int64          `json:"restore_duration_ms,omitempty"`
 	Checks            []genericCheck `json:"checks,omitempty"`
 	DebugHint         string         `json:"debug_hint,omitempty"`
+	LogsTail          string         `json:"logs_tail,omitempty"`
 }
 
 type genericCheck struct {
@@ -390,6 +424,7 @@ func buildGeneric(results []verify.Result) genericPayload {
 			DurationMs:        r.Duration.Milliseconds(),
 			RestoreDurationMs: r.RestoreDuration.Milliseconds(),
 			DebugHint:         r.DebugHint,
+			LogsTail:          r.LogsTail,
 		}
 		if r.Err != nil {
 			gr.Error = r.Err.Error()
@@ -443,12 +478,24 @@ func (n *Notifier) buildTelegram(results []verify.Result) telegramPayload {
 }
 
 type teamsPayload struct {
-	Type       string         `json:"@type"`
-	Context    string         `json:"@context"`
-	ThemeColor string         `json:"themeColor"`
-	Summary    string         `json:"summary"`
-	Title      string         `json:"title"`
-	Sections   []teamsSection `json:"sections"`
+	Type            string                `json:"@type"`
+	Context         string                `json:"@context"`
+	ThemeColor      string                `json:"themeColor"`
+	Summary         string                `json:"summary"`
+	Title           string                `json:"title"`
+	Sections        []teamsSection        `json:"sections"`
+	PotentialAction []teamsAction         `json:"potentialAction,omitempty"`
+}
+
+type teamsAction struct {
+	Type    string              `json:"@type"`
+	Name    string              `json:"name"`
+	Targets []teamsActionTarget `json:"targets,omitempty"`
+}
+
+type teamsActionTarget struct {
+	OS  string `json:"os"`
+	URI string `json:"uri"`
 }
 
 type teamsSection struct {
@@ -465,18 +512,41 @@ func buildTeams(results []verify.Result) teamsPayload {
 		title = "🚨 Lazarus: Restoration Drill Failed"
 	}
 	summaryText := FormatMessage(results)
-	return teamsPayload{
-		Type:       "MessageCard",
-		Context:    "http://schema.org/extensions",
-		ThemeColor: themeColor,
-		Summary:    title,
-		Title:      title,
-		Sections: []teamsSection{
-			{
-				ActivityTitle: "Restoration Drill Summary",
-				Text:          fmt.Sprintf("```\n%s\n```", truncate(summaryText)),
+
+	sections := []teamsSection{
+		{
+			ActivityTitle: "Restoration Drill Summary",
+			Text:          fmt.Sprintf("```\n%s\n```", truncate(summaryText)),
+		},
+	}
+
+	for _, r := range results {
+		if !r.Passed && r.LogsTail != "" {
+			sections = append(sections, teamsSection{
+				ActivityTitle: fmt.Sprintf("Container Logs Tail: %s", r.Target),
+				Text:          fmt.Sprintf("```\n%s\n```", truncate(r.LogsTail)),
+			})
+		}
+	}
+
+	actions := []teamsAction{
+		{
+			Type: "OpenURI",
+			Name: "⚡ Open Control Plane",
+			Targets: []teamsActionTarget{
+				{OS: "default", URI: "http://localhost:8080"},
 			},
 		},
+	}
+
+	return teamsPayload{
+		Type:            "MessageCard",
+		Context:         "http://schema.org/extensions",
+		ThemeColor:      themeColor,
+		Summary:         title,
+		Title:           title,
+		Sections:        sections,
+		PotentialAction: actions,
 	}
 }
 

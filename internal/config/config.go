@@ -157,6 +157,12 @@ type Target struct {
 	// (AWS S3, Cloudflare R2, MinIO, etc.) to Path before verification.
 	S3 *S3Config `yaml:"s3"`
 
+	// GCS, if set, pulls the backup file directly from Google Cloud Storage.
+	GCS *GCSConfig `yaml:"gcs"`
+
+	// Azure, if set, pulls the backup file directly from Azure Blob Storage.
+	Azure *AzureConfig `yaml:"azure"`
+
 	// CleanupBackup, when true, removes the file at Path after verification
 	// finishes to reclaim disk space (useful for pulled remote/S3 backups).
 	CleanupBackup bool `yaml:"cleanup_backup"`
@@ -176,7 +182,26 @@ type Target struct {
 	// Interval is an optional duration interval (e.g. "24h") for daemon mode.
 	Interval time.Duration `yaml:"interval"`
 
+	// SLARTO defines the service level agreement restoration time objective (e.g. 5m, 1h).
+	// Used by Control Plane for SLA compliance tracking.
+	SLARTO time.Duration `yaml:"sla_rto"`
+
 	Checks []Check `yaml:"checks"`
+}
+
+// GCSConfig configures fetching a backup from Google Cloud Storage.
+type GCSConfig struct {
+	Bucket          string `yaml:"bucket"`
+	Object          string `yaml:"object"`
+	CredentialsFile string `yaml:"credentials_file"`
+}
+
+// AzureConfig configures fetching a backup from Azure Blob Storage.
+type AzureConfig struct {
+	AccountName string `yaml:"account_name"`
+	Container   string `yaml:"container"`
+	Blob        string `yaml:"blob"`
+	AccountKey  string `yaml:"account_key"`
 }
 
 // S3Config configures direct backup retrieval from AWS S3, Cloudflare R2,
@@ -281,8 +306,24 @@ func (c *Config) applyDefaultsAndValidate() error {
 			t.FetchTimeout = defaultFetchTimeout
 		}
 
+		remoteSources := 0
+		if t.FetchCommand != "" {
+			remoteSources++
+		}
+		if t.S3 != nil {
+			remoteSources++
+		}
+		if t.GCS != nil {
+			remoteSources++
+		}
+		if t.Azure != nil {
+			remoteSources++
+		}
 		if t.S3 != nil && t.FetchCommand != "" {
 			return fmt.Errorf("target %q: cannot configure both s3 and fetch_command", t.Name)
+		}
+		if remoteSources > 1 {
+			return fmt.Errorf("target %q: cannot configure multiple remote fetch methods (fetch_command, s3, gcs, azure)", t.Name)
 		}
 
 		if t.S3 != nil {
@@ -306,6 +347,39 @@ func (c *Config) applyDefaultsAndValidate() error {
 			}
 			if t.S3.SessionToken == "" {
 				t.S3.SessionToken = os.Getenv("AWS_SESSION_TOKEN")
+			}
+		}
+
+		if t.GCS != nil {
+			if strings.ContainsAny(t.Path, "*?[") {
+				return fmt.Errorf("target %q: gcs download path %q cannot contain glob wildcards", t.Name, t.Path)
+			}
+			if t.GCS.Bucket == "" {
+				return fmt.Errorf("target %q: gcs.bucket is required", t.Name)
+			}
+			if t.GCS.Object == "" {
+				return fmt.Errorf("target %q: gcs.object is required", t.Name)
+			}
+			if t.GCS.CredentialsFile == "" {
+				t.GCS.CredentialsFile = os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+			}
+		}
+
+		if t.Azure != nil {
+			if strings.ContainsAny(t.Path, "*?[") {
+				return fmt.Errorf("target %q: azure download path %q cannot contain glob wildcards", t.Name, t.Path)
+			}
+			if t.Azure.AccountName == "" {
+				return fmt.Errorf("target %q: azure.account_name is required", t.Name)
+			}
+			if t.Azure.Container == "" {
+				return fmt.Errorf("target %q: azure.container is required", t.Name)
+			}
+			if t.Azure.Blob == "" {
+				return fmt.Errorf("target %q: azure.blob is required", t.Name)
+			}
+			if t.Azure.AccountKey == "" {
+				t.Azure.AccountKey = os.Getenv("AZURE_STORAGE_KEY")
 			}
 		}
 

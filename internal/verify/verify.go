@@ -10,10 +10,12 @@ import (
 	"sync"
 	"time"
 
+	"lazarus/internal/azurefetch"
 	"lazarus/internal/backup"
 	"lazarus/internal/check"
 	"lazarus/internal/config"
 	"lazarus/internal/fetch"
+	"lazarus/internal/gcsfetch"
 	"lazarus/internal/redischeck"
 	"lazarus/internal/restore"
 	"lazarus/internal/s3fetch"
@@ -48,6 +50,9 @@ type Result struct {
 	Checks          []check.Result
 	Duration        time.Duration
 	RestoreDuration time.Duration
+
+	// LogsTail contains the trailing logs from the container if failure occurred.
+	LogsTail string
 
 	// DebugHint is a ready-to-run command for connecting to this target's
 	// sandbox (or SQLite temp file) after a failure, set only when
@@ -108,6 +113,28 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 		}
 		if err := downloader.Download(ctx, target.S3, target.Path); err != nil {
 			result.Err = fmt.Errorf("s3 download: %w", err)
+			return
+		}
+	}
+
+	if target.GCS != nil {
+		downloader := gcsfetch.New()
+		if isTerminal(os.Stderr) {
+			downloader.ProgressWriter = os.Stderr
+		}
+		if err := downloader.Download(ctx, target.GCS, target.Path); err != nil {
+			result.Err = fmt.Errorf("gcs download: %w", err)
+			return
+		}
+	}
+
+	if target.Azure != nil {
+		downloader := azurefetch.New()
+		if isTerminal(os.Stderr) {
+			downloader.ProgressWriter = os.Stderr
+		}
+		if err := downloader.Download(ctx, target.Azure, target.Path); err != nil {
+			result.Err = fmt.Errorf("azure download: %w", err)
 			return
 		}
 	}
@@ -196,6 +223,9 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 			return
 		}
 		defer func() {
+			if result.Err != nil && sb != nil {
+				result.LogsTail = sb.LogsTail(ctx, 50)
+			}
 			if keepOnFailure && result.Err != nil {
 				result.DebugHint = debugHint(sb)
 				return
@@ -218,6 +248,9 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 			return
 		}
 		defer func() {
+			if result.Err != nil && sb != nil {
+				result.LogsTail = sb.LogsTail(ctx, 50)
+			}
 			if keepOnFailure && result.Err != nil {
 				result.DebugHint = debugHint(sb)
 				return
@@ -268,6 +301,9 @@ func debugHint(sb *sandbox.Sandbox) string {
 			sb.Name, sandbox.Password(), sandbox.DBName())
 	case config.EngineRedis:
 		return fmt.Sprintf("docker exec -it %s redis-cli", sb.Name)
+	case config.EngineMongoDB:
+		return fmt.Sprintf("docker exec -it %s mongosh --username %s --password=%s --authenticationDatabase admin",
+			sb.Name, sandbox.User(), sandbox.Password())
 	default: // Postgres
 		return fmt.Sprintf("docker exec -it %s psql --username %s --dbname %s",
 			sb.Name, sandbox.User(), sandbox.DBName())
