@@ -10,6 +10,7 @@ import (
 
 	"lazarus/internal/backup"
 	"lazarus/internal/check"
+	"lazarus/internal/schema"
 	"lazarus/internal/verify"
 )
 
@@ -233,5 +234,60 @@ func TestStepSummary(t *testing.T) {
 		if !strings.Contains(out, expected) {
 			t.Errorf("StepSummary output missing %q, got:\n%s", expected, out)
 		}
+	}
+}
+
+func TestReportFallbackAndSchemaDrift(t *testing.T) {
+	results := []verify.Result{
+		{
+			Target:          "fallback-target",
+			Passed:          true,
+			Stage:           verify.StageDone,
+			Duration:        3 * time.Second,
+			RestoreDuration: 1 * time.Second,
+			Backup:          &backup.File{Path: "/backups/backup_old.sql", Size: 2048},
+			FallbackUsed:    true,
+			FallbackBackup:  &backup.File{Path: "/backups/backup_old.sql", Size: 2048},
+			FallbackRPO:     2 * time.Hour,
+			FallbackMessage: "Primary backup corrupted; fell back to backup_old.sql",
+			SchemaDrift: &schema.DriftReport{
+				TotalTables:      15,
+				MissingTables:    []string{"audit_logs"},
+				EmptyTables:      []string{"transactions"},
+				HasCriticalDrift: true,
+			},
+		},
+	}
+
+	// 1. Text test
+	var textBuf bytes.Buffer
+	Text(&textBuf, results, false)
+	textOut := textBuf.String()
+	if !strings.Contains(textOut, "FALLBACK RECOVERY - RPO: 2h0m0s") {
+		t.Errorf("Text output missing fallback RPO notice: %s", textOut)
+	}
+	if !strings.Contains(textOut, "schema WARNING: missing tables [audit_logs]") {
+		t.Errorf("Text output missing schema warning: %s", textOut)
+	}
+
+	// 2. JSON test
+	var jsonBuf bytes.Buffer
+	JSON(&jsonBuf, results)
+	var jr []jsonResult
+	if err := json.Unmarshal(jsonBuf.Bytes(), &jr); err != nil {
+		t.Fatalf("json unmarshal: %v", err)
+	}
+	if !jr[0].FallbackUsed || jr[0].FallbackRPOSec != 7200 {
+		t.Errorf("JSON output wrong fallback data: %+v", jr[0])
+	}
+
+	// 3. Step summary test
+	var stepBuf bytes.Buffer
+	if err := StepSummary(&stepBuf, results); err != nil {
+		t.Fatalf("StepSummary err: %v", err)
+	}
+	stepOut := stepBuf.String()
+	if !strings.Contains(stepOut, "FALLBACK PASS") || !strings.Contains(stepOut, "Schema Drift Warning") {
+		t.Errorf("StepSummary missing fallback or schema warning: %s", stepOut)
 	}
 }

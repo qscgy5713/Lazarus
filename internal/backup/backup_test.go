@@ -37,6 +37,28 @@ func TestLocatePicksNewestGlobMatch(t *testing.T) {
 	}
 }
 
+func TestLocateAllOrder(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+
+	f1 := writeFile(t, dir, "db-2026-01-01.sql", []byte("1"), now.Add(-72*time.Hour))
+	f3 := writeFile(t, dir, "db-2026-01-03.sql", []byte("3"), now.Add(-1*time.Hour))
+	f2 := writeFile(t, dir, "db-2026-01-02.sql", []byte("2"), now.Add(-48*time.Hour))
+
+	files, err := LocateAll(filepath.Join(dir, "db-*.sql"))
+	if err != nil {
+		t.Fatalf("LocateAll() error = %v", err)
+	}
+	if len(files) != 3 {
+		t.Fatalf("len(files) = %d, want 3", len(files))
+	}
+	if files[0].Path != f3 || files[1].Path != f2 || files[2].Path != f1 {
+		t.Errorf("LocateAll sorting incorrect: got [%s, %s, %s], want [%s, %s, %s]",
+			filepath.Base(files[0].Path), filepath.Base(files[1].Path), filepath.Base(files[2].Path),
+			filepath.Base(f3), filepath.Base(f2), filepath.Base(f1))
+	}
+}
+
 func TestLocateAcceptsPlainPath(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dump.sql", []byte("SELECT 1;"), time.Now())

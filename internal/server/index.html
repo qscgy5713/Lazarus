@@ -42,6 +42,10 @@
           <span>📜</span>
           <span>Compliance Certificate</span>
         </button>
+        <div id="sseIndicator" class="px-2.5 py-1.5 text-xs font-mono rounded-lg border border-slate-800 bg-slate-900 text-slate-400 flex items-center space-x-1.5 shadow-sm" title="Realtime Server-Sent Events">
+          <span id="sseDot" class="h-2 w-2 rounded-full bg-slate-500"></span>
+          <span id="sseLabel" class="text-[11px]">Connecting</span>
+        </div>
         <button onclick="fetchData()" class="px-3 py-1.5 text-xs font-medium bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-lg border border-slate-800 transition flex items-center space-x-1">
           <span id="refreshIcon">🔄</span>
           <span>Refresh</span>
@@ -705,8 +709,41 @@
       }
     });
 
+    // Realtime Server-Sent Events (SSE) Stream
+    function initSSE() {
+      if (!window.EventSource) return;
+      const es = new EventSource('/api/v1/stream');
+      const dot = document.getElementById('sseDot');
+      const label = document.getElementById('sseLabel');
+
+      es.addEventListener('connected', () => {
+        if (dot) dot.className = 'h-2 w-2 rounded-full bg-emerald-400 animate-pulse';
+        if (label) {
+          label.className = 'text-[11px] text-emerald-400 font-bold';
+          label.innerText = 'LIVE SSE';
+        }
+      });
+
+      es.addEventListener('drill_report', () => {
+        fetchData();
+      });
+
+      es.addEventListener('drill_triggered', () => {
+        fetchData();
+      });
+
+      es.onerror = () => {
+        if (dot) dot.className = 'h-2 w-2 rounded-full bg-amber-500';
+        if (label) {
+          label.className = 'text-[11px] text-amber-400';
+          label.innerText = 'Reconnecting';
+        }
+      };
+    }
+
     fetchData();
-    setInterval(fetchData, 15000);
+    initSSE();
+    setInterval(fetchData, 30000);
   </script>
 </body>
 </html>

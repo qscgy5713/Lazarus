@@ -42,9 +42,12 @@ var nameCounter atomic.Uint64
 
 // Options configures optional sandbox resource constraints and storage mounts.
 type Options struct {
-	DataDir     string
-	MemoryLimit string
-	CPUs        string
+	DataDir        string
+	MemoryLimit    string
+	CPUs           string
+	Network        string
+	ReadOnlyRootfs bool
+	DropCaps       bool
 }
 
 // Start launches a container for engine using image and waits until the
@@ -62,7 +65,17 @@ func StartWithMount(ctx context.Context, engine config.Engine, image, dataDir st
 func StartWithOptions(ctx context.Context, engine config.Engine, image string, opts Options) (*Sandbox, error) {
 	name := fmt.Sprintf("lazarus-verify-%d-%d", time.Now().UnixNano(), nameCounter.Add(1))
 
-	args := []string{"run", "--detach", "--name", name, "--rm", "--network", "none"}
+	netMode := "none"
+	if opts.Network != "" {
+		netMode = opts.Network
+	}
+	args := []string{"run", "--detach", "--name", name, "--rm", "--network", netMode}
+	if opts.ReadOnlyRootfs {
+		args = append(args, "--read-only", "--tmpfs", "/tmp", "--tmpfs", "/run")
+	}
+	if opts.DropCaps {
+		args = append(args, "--cap-drop=ALL")
+	}
 	if opts.MemoryLimit != "" {
 		args = append(args, "--memory", opts.MemoryLimit)
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,11 +16,6 @@ import (
 )
 
 // Text writes a human-readable summary and reports whether everything passed.
-// quiet suppresses every line for a passing target — no PASS line, no
-// backup/restore/check detail — so a cron run where everything is fine
-// produces just the final tally instead of one block per target. A failing
-// target is always printed in full regardless of quiet: a run worth
-// investigating is exactly the noise quiet mode isn't meant to cut.
 func Text(w io.Writer, results []verify.Result, quiet bool) bool {
 	allPassed := true
 	printedAny := false
@@ -29,12 +25,21 @@ func Text(w io.Writer, results []verify.Result, quiet bool) bool {
 			if quiet {
 				continue
 			}
-			fmt.Fprintf(w, "PASS  %s (%s)\n", r.Target, r.Duration.Round(time.Millisecond))
+			statusSuffix := ""
+			if r.FallbackUsed {
+				statusSuffix = fmt.Sprintf(" (FALLBACK RECOVERY - RPO: %s)", r.FallbackRPO.Round(time.Second))
+			}
+			fmt.Fprintf(w, "PASS  %s (%s)%s\n", r.Target, r.Duration.Round(time.Millisecond), statusSuffix)
 		} else {
 			allPassed = false
 			fmt.Fprintf(w, "FAIL  %s [%s] %v\n", r.Target, r.Stage, r.Err)
 		}
 		printedAny = true
+
+		if r.FallbackUsed {
+			fmt.Fprintf(w, "      fallback: recovered using %s (RPO: %s)\n",
+				filepath.Base(r.Backup.Path), r.FallbackRPO.Round(time.Second))
+		}
 
 		if r.Backup != nil {
 			fmt.Fprintf(w, "      backup: %s (%s, %s old)\n",
@@ -44,13 +49,16 @@ func Text(w io.Writer, results []verify.Result, quiet bool) bool {
 			)
 		}
 		if r.RestoreDuration > 0 {
-			// Surfaced even without a configured limit: restore time is
-			// otherwise only discovered for the first time during a real
-			// incident, so it's worth seeing on every run. Millisecond
-			// precision (matching the overall duration line above) because
-			// rounding to whole seconds turns a real 116ms restore into a
-			// misleading "0s".
 			fmt.Fprintf(w, "      restore took: %s\n", r.RestoreDuration.Round(time.Millisecond))
+		}
+		if r.SchemaDrift != nil {
+			fmt.Fprintf(w, "      schema: %d tables verified\n", r.SchemaDrift.TotalTables)
+			if len(r.SchemaDrift.MissingTables) > 0 {
+				fmt.Fprintf(w, "      schema WARNING: missing tables %v\n", r.SchemaDrift.MissingTables)
+			}
+			if len(r.SchemaDrift.EmptyTables) > 0 {
+				fmt.Fprintf(w, "      schema WARNING: empty tables %v\n", r.SchemaDrift.EmptyTables)
+			}
 		}
 		for _, c := range r.Checks {
 			status := "ok"
@@ -67,10 +75,6 @@ func Text(w io.Writer, results []verify.Result, quiet bool) bool {
 	}
 
 	passed, failed := tally(results)
-	// The blank separator line only makes sense after at least one
-	// target's own block — with --quiet and nothing to report, skipping it
-	// keeps a fully-passing run's output to the single tally line it
-	// promises, instead of a stray leading blank line.
 	if printedAny {
 		fmt.Fprintln(w)
 	}
@@ -80,16 +84,23 @@ func Text(w io.Writer, results []verify.Result, quiet bool) bool {
 }
 
 type jsonResult struct {
-	Target            string      `json:"target"`
-	Passed            bool        `json:"passed"`
-	Stage             string      `json:"stage"`
-	Error             string      `json:"error,omitempty"`
-	BackupPath        string      `json:"backup_path,omitempty"`
-	BackupAge         string      `json:"backup_age,omitempty"`
-	DurationMs        int64       `json:"duration_ms"`
-	RestoreDurationMs int64       `json:"restore_duration_ms,omitempty"`
-	Checks            []jsonCheck `json:"checks,omitempty"`
-	DebugHint         string      `json:"debug_hint,omitempty"`
+	Target              string      `json:"target"`
+	Passed              bool        `json:"passed"`
+	Stage               string      `json:"stage"`
+	Error               string      `json:"error,omitempty"`
+	BackupPath          string      `json:"backup_path,omitempty"`
+	BackupAge           string      `json:"backup_age,omitempty"`
+	DurationMs          int64       `json:"duration_ms"`
+	RestoreDurationMs   int64       `json:"restore_duration_ms,omitempty"`
+	Checks              []jsonCheck `json:"checks,omitempty"`
+	DebugHint           string      `json:"debug_hint,omitempty"`
+	FallbackUsed        bool        `json:"fallback_used,omitempty"`
+	FallbackBackup      string      `json:"fallback_backup,omitempty"`
+	FallbackRPOSec      float64     `json:"fallback_rpo_seconds,omitempty"`
+	FallbackMessage     string      `json:"fallback_message,omitempty"`
+	SchemaTotalTables   int         `json:"schema_total_tables,omitempty"`
+	SchemaMissingTables []string    `json:"schema_missing_tables,omitempty"`
+	SchemaEmptyTables   []string    `json:"schema_empty_tables,omitempty"`
 }
 
 type jsonCheck struct {
@@ -123,6 +134,19 @@ func JSON(w io.Writer, results []verify.Result) bool {
 		if r.Backup != nil {
 			jr.BackupPath = r.Backup.Path
 			jr.BackupAge = r.Backup.Age(time.Now()).Round(time.Second).String()
+		}
+		if r.FallbackUsed {
+			jr.FallbackUsed = true
+			if r.FallbackBackup != nil {
+				jr.FallbackBackup = r.FallbackBackup.Path
+			}
+			jr.FallbackRPOSec = r.FallbackRPO.Seconds()
+			jr.FallbackMessage = r.FallbackMessage
+		}
+		if r.SchemaDrift != nil {
+			jr.SchemaTotalTables = r.SchemaDrift.TotalTables
+			jr.SchemaMissingTables = r.SchemaDrift.MissingTables
+			jr.SchemaEmptyTables = r.SchemaDrift.EmptyTables
 		}
 		for _, c := range r.Checks {
 			jr.Checks = append(jr.Checks, jsonCheck{
@@ -173,6 +197,8 @@ func StepSummary(w io.Writer, results []verify.Result) error {
 		status := "✅ PASS"
 		if !r.Passed {
 			status = "❌ FAIL"
+		} else if r.FallbackUsed {
+			status = "🔄 FALLBACK PASS"
 		}
 		duration := r.Duration.Round(time.Millisecond).String()
 		restoreDuration := "-"
@@ -200,6 +226,23 @@ func StepSummary(w io.Writer, results []verify.Result) error {
 	fmt.Fprintln(w)
 
 	for _, r := range results {
+		if r.FallbackUsed {
+			fmt.Fprintf(w, "### 🔄 Fallback Recovery: `%s`\n\n", r.Target)
+			fmt.Fprintf(w, "> [!IMPORTANT]\n")
+			fmt.Fprintf(w, "> %s\n\n", r.FallbackMessage)
+		}
+
+		if r.SchemaDrift != nil && r.SchemaDrift.HasCriticalDrift {
+			fmt.Fprintf(w, "### ⚠️ Schema Drift Warning: `%s`\n\n", r.Target)
+			if len(r.SchemaDrift.MissingTables) > 0 {
+				fmt.Fprintf(w, "- **Missing Expected Tables**: `%v`\n", r.SchemaDrift.MissingTables)
+			}
+			if len(r.SchemaDrift.EmptyTables) > 0 {
+				fmt.Fprintf(w, "- **Empty Tables (Zero Rows)**: `%v`\n", r.SchemaDrift.EmptyTables)
+			}
+			fmt.Fprintln(w)
+		}
+
 		if !r.Passed {
 			fmt.Fprintf(w, "### ⚠️ Failure Details: `%s`\n\n", r.Target)
 			if r.Err != nil {

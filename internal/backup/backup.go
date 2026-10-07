@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -66,6 +67,20 @@ func HumanSize(bytes int64) string {
 // modified match. Newest wins because that's the one you'd actually restore
 // in an emergency — verifying an older file would prove the wrong thing.
 func Locate(pattern string) (*File, error) {
+	files, err := LocateAll(pattern)
+	if err != nil {
+		return nil, err
+	}
+	return files[0], nil
+}
+
+type fileCandidate struct {
+	path string
+	info os.FileInfo
+}
+
+// LocateAll resolves pattern to all matching backup files, sorted newest first.
+func LocateAll(pattern string) ([]*File, error) {
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("bad path pattern %q: %w", pattern, err)
@@ -74,8 +89,7 @@ func Locate(pattern string) (*File, error) {
 		return nil, fmt.Errorf("no backup file matches %q", pattern)
 	}
 
-	var newest string
-	var newestInfo os.FileInfo
+	var candidates []fileCandidate
 	for _, match := range matches {
 		info, err := os.Stat(match)
 		if err != nil {
@@ -84,28 +98,41 @@ func Locate(pattern string) (*File, error) {
 		if info.IsDir() {
 			continue
 		}
-		if newestInfo == nil || info.ModTime().After(newestInfo.ModTime()) {
-			newest, newestInfo = match, info
-		}
+		candidates = append(candidates, fileCandidate{path: match, info: info})
 	}
-	if newestInfo == nil {
+
+	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no backup file matches %q (only directories)", pattern)
 	}
 
-	file := &File{
-		Path:      newest,
-		Size:      newestInfo.Size(),
-		ModTime:   newestInfo.ModTime(),
-		Encrypted: hasEncryptedSuffix(newest),
+	// Sort newest first
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].info.ModTime().After(candidates[j].info.ModTime())
+	})
+
+	var out []*File
+	for _, c := range candidates {
+		f, err := parseBackupFile(c.path, c.info)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, f)
 	}
 
-	// Compression is encrypt-last convention's second-to-outermost suffix
-	// (shop.sql.gz.gpg), so it has to be checked against the name with any
-	// encrypted suffix stripped off first — otherwise "shop.sql.gz.gpg"
-	// would never match ".gz" at all, since the name doesn't end with it.
-	nameUnderEncryption := newest
+	return out, nil
+}
+
+func parseBackupFile(path string, info os.FileInfo) (*File, error) {
+	file := &File{
+		Path:      path,
+		Size:      info.Size(),
+		ModTime:   info.ModTime(),
+		Encrypted: hasEncryptedSuffix(path),
+	}
+
+	nameUnderEncryption := path
 	if file.Encrypted {
-		nameUnderEncryption = strings.TrimSuffix(newest, filepath.Ext(newest))
+		nameUnderEncryption = strings.TrimSuffix(path, filepath.Ext(path))
 	}
 	lowerName := strings.ToLower(nameUnderEncryption)
 	if strings.HasSuffix(lowerName, ".gz") {
@@ -116,7 +143,7 @@ func Locate(pattern string) (*File, error) {
 		file.Compression = CompressionZstd
 	}
 
-	format, err := detectFormat(newest, file.Compressed || file.Encrypted)
+	format, err := detectFormat(path, file.Compressed || file.Encrypted)
 	if err != nil {
 		return nil, err
 	}

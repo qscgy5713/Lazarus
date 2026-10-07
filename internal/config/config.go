@@ -191,6 +191,35 @@ type Target struct {
 	// Used by Control Plane for SLA compliance tracking.
 	SLARTO time.Duration `yaml:"sla_rto"`
 
+	// FallbackOnFailure, when true, automatically tries previous backup archives
+	// if the latest backup fails to restore, calculating the true achievable RPO.
+	FallbackOnFailure bool `yaml:"fallback_on_failure"`
+
+	// MaxFallbackDepth is the maximum number of previous backups to attempt (default: 3).
+	MaxFallbackDepth int `yaml:"max_fallback_depth"`
+
+	// AutoSchemaCheck, when true, introspects tables and row counts automatically
+	// to detect missing tables or sudden empty tables compared to the previous baseline.
+	AutoSchemaCheck bool `yaml:"auto_schema_check"`
+
+	// SchemaBaseline lists table names expected to exist when AutoSchemaCheck is true.
+	SchemaBaseline []string `yaml:"schema_baseline"`
+
+	// Network specifies container network mode (e.g. "none" to isolate sandbox from network).
+	Network string `yaml:"network"`
+
+	// ReadOnlyRootfs mounts the container root filesystem as read-only for security hardening.
+	ReadOnlyRootfs bool `yaml:"read_only_rootfs"`
+
+	// PreDrillCommand is an optional hook executed before verification begins.
+	PreDrillCommand string `yaml:"pre_drill_command"`
+
+	// PostDrillCommand is an optional hook executed after verification concludes.
+	PostDrillCommand string `yaml:"post_drill_command"`
+
+	// HooksTimeout limits execution duration of pre/post drill hooks (default: 5m).
+	HooksTimeout time.Duration `yaml:"hooks_timeout"`
+
 	Checks []Check `yaml:"checks"`
 }
 
@@ -411,6 +440,13 @@ func (c *Config) applyDefaultsAndValidate() error {
 			return fmt.Errorf("target %q: engine is required (postgres, mysql, sqlite, redis or mongodb)", t.Name)
 		default:
 			return fmt.Errorf("target %q: unsupported engine %q (expected postgres, mysql, sqlite, redis or mongodb)", t.Name, t.Engine)
+		}
+
+		if t.FallbackOnFailure && t.MaxFallbackDepth <= 0 {
+			t.MaxFallbackDepth = 3
+		}
+		if (t.PreDrillCommand != "" || t.PostDrillCommand != "") && t.HooksTimeout <= 0 {
+			t.HooksTimeout = 5 * time.Minute
 		}
 
 		if t.CPUs != "" {

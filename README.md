@@ -513,6 +513,74 @@ targets:
 - **優雅平滑關閉**：捕捉 `SIGINT` (Ctrl+C) 或 `SIGTERM` 信號，等待當前正在進行的 sandbox 還原或 check 斷言安全清理後乾淨退出。
 - **持續通報整合**：每次循環依據 `notify` 策略自動向 Slack、Discord、Email 或 Control Plane 心跳回報。
 
+## 企業級災難復原與安全特性 (Enterprise DR & Security)
+
+### 1. 備份回退救援演練與真實 RPO 分析 (Fallback Disaster Recovery & RPO)
+
+當最新的一份備份損毀（檔案截斷、GPG 損壞或校驗失敗）時，一般備份工具只會回報失敗。Lazarus 支援自動往前回退歷史備份（最多嘗試 `max_fallback_depth` 份）：
+- 若回退的歷史備份還原並檢驗成功，演練將標記為 `FALLBACK PASS`。
+- 精確計算出**真實可復原時間點差距 (Actual RPO)**，告知團隊「若現在發生真實災難，最近可救回的資料停留在多久之前」。
+
+```yaml
+targets:
+  - name: production-db
+    engine: postgres
+    path: /backups/postgres/*.sql.gz
+    fallback_on_failure: true
+    max_fallback_depth: 3
+```
+
+### 2. 全表自動掃描與結構漂移比對 (Automated Schema & Table Drift Inspection)
+
+還原完成後，自動探測現存所有資料表與 Row 數概覽，並可比對預期的 Baseline 清單：
+- 自動抓出消失的關鍵資料表（Missing Tables）、全空的資料表（Empty Tables）。
+- 支援 PostgreSQL、MySQL、SQLite 與 MongoDB。
+
+```yaml
+targets:
+  - name: production-db
+    engine: postgres
+    path: /backups/postgres/*.sql.gz
+    auto_schema_check: true
+    schema_baseline: [users, orders, audit_logs, payments]
+```
+
+### 3. 沙盒安全隔離加固 (Network Isolation & Sandbox Hardening)
+
+執行未知的歷史備份或第三方匯入檔時，防範潛在的 SQL 注入反彈 Shell、惡意儲存過程 (Stored Procedure) 或 SSRF 外連：
+- `network: none`：對 Docker 沙盒容器進行完全斷網隔離。
+- `read_only_rootfs: true`：掛載容器根檔案系統為唯讀，搭配 tmpfs 暫存。
+
+```yaml
+targets:
+  - name: untrusted-import-db
+    engine: postgres
+    path: /backups/untrusted/*.sql.gz
+    network: none
+    read_only_rootfs: true
+```
+
+### 4. 演練前後生命週期勾子 (Pre/Post Drill Lifecycle Hooks)
+
+在目標演練前後執行自訂腳本，支援超時保護與完整環境變數注入：
+- 注入變數：`$LAZARUS_TARGET`, `$LAZARUS_ENGINE`, `$LAZARUS_STATUS`, `$LAZARUS_STAGE`, `$LAZARUS_ERROR`, `$LAZARUS_DURATION_MS`, `$LAZARUS_RESTORE_DURATION_MS`, `$LAZARUS_BACKUP_PATH`, `$LAZARUS_FALLBACK_USED`, `$LAZARUS_FALLBACK_RPO_SECONDS`。
+
+```yaml
+targets:
+  - name: production-db
+    engine: postgres
+    path: /backups/postgres/*.sql.gz
+    pre_drill_command: "echo 'Starting drill for $LAZARUS_TARGET' > /var/log/drills.log"
+    post_drill_command: "curl -X POST https://internal-api/audit -d 'target=$LAZARUS_TARGET&status=$LAZARUS_STATUS'"
+    hooks_timeout: 30s
+```
+
+### 5. Control Plane SSE 即時串流 (Realtime Server-Sent Events)
+
+Lazarus Control Plane 後端提供 `GET /api/v1/stream` 原生 Server-Sent Events 串流，前端 Web UI 具備即時連線指示燈與無刷新動態更新：
+- 任何演練報告上傳或手動觸發時，所有連線中的瀏覽器即時同步刷新卡片與指標。
+- 支援 `?api_key=` 權限鑑權與定期 Ping 心跳保持連線。
+
 ## 排進 cron
 
 ```cron

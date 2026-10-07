@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"lazarus/internal/restore"
 	"lazarus/internal/s3fetch"
 	"lazarus/internal/sandbox"
+	"lazarus/internal/schema"
 	"lazarus/internal/sqlitecheck"
 	"lazarus/internal/state"
 )
@@ -28,6 +31,7 @@ import (
 type Stage string
 
 const (
+	StagePreHook   Stage = "pre_hook"
 	StageFetch     Stage = "fetch"
 	StageLocate    Stage = "locate"
 	StageAge       Stage = "age"
@@ -35,7 +39,9 @@ const (
 	StageSandbox   Stage = "sandbox"
 	StageRestore   Stage = "restore"
 	StageRTO       Stage = "rto"
+	StageSchema    Stage = "schema"
 	StageChecks    Stage = "checks"
+	StagePostHook  Stage = "post_hook"
 	StageDone      Stage = "done"
 )
 
@@ -64,35 +70,51 @@ type Result struct {
 	// keepOnFailure asked for it to be kept instead of torn down. Empty
 	// otherwise.
 	DebugHint string
+
+	// Fallback drill results
+	FallbackUsed    bool
+	FallbackBackup  *backup.File
+	FallbackRPO     time.Duration
+	FallbackMessage string
+
+	// Schema drift analysis
+	SchemaDrift *schema.DriftReport
 }
 
 // Run verifies a single target end to end. It only returns an error-free,
 // passing result when the backup actually restored and every check held.
-// baseline is the backup size recorded from this target's last fully-passed
-// run, if any (hasBaseline is false on a target's first-ever run).
-// keepOnFailure, when true, leaves the sandbox container (or SQLite temp
-// file) in place instead of tearing it down whenever the target ends up
-// failing at or after the restore step, and populates the result's
-// DebugHint with how to connect to it — for looking at exactly what did or
-// didn't make it into the restored database, rather than guessing from the
-// error message alone. gpgPassphrase decrypts the backup first when it's
-// GPG-encrypted; ignored for a target whose backup isn't.
 func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline bool, keepOnFailure bool, gpgPassphrase string) (result Result) {
 	started := time.Now()
-	result = Result{Target: target.Name, Tags: target.Tags, Stage: StageFetch, SLARTO: target.SLARTO}
-	// A named return value, not a "finish() Result" helper returning a plain
-	// copy: the keep-on-failure defers below mutate result.DebugHint after
-	// deciding whether to tear down the sandbox, and only a named return
-	// value lets a defer's mutation actually reach the caller — a plain
-	// `return someCopy` would have already locked in its value before any
-	// deferred function ran.
+	result = Result{Target: target.Name, Tags: target.Tags, Stage: StagePreHook, SLARTO: target.SLARTO}
+
 	defer func() {
 		result.Duration = time.Since(started)
+		// Run post_drill_command if configured
+		if target.PostDrillCommand != "" {
+			hookErr := runHook(ctx, target.PostDrillCommand, target.HooksTimeout, map[string]string{
+				"LAZARUS_TARGET":               target.Name,
+				"LAZARUS_ENGINE":               string(target.Engine),
+				"LAZARUS_STATUS":               hookStatus(result.Passed),
+				"LAZARUS_STAGE":                string(result.Stage),
+				"LAZARUS_ERROR":                errString(result.Err),
+				"LAZARUS_DURATION_MS":          fmt.Sprintf("%d", result.Duration.Milliseconds()),
+				"LAZARUS_RESTORE_DURATION_MS":  fmt.Sprintf("%d", result.RestoreDuration.Milliseconds()),
+				"LAZARUS_BACKUP_PATH":          backupPath(result.Backup),
+				"LAZARUS_FALLBACK_USED":        fmt.Sprintf("%t", result.FallbackUsed),
+				"LAZARUS_FALLBACK_RPO_SECONDS": fmt.Sprintf("%.0f", result.FallbackRPO.Seconds()),
+			})
+			if hookErr != nil {
+				if result.Err == nil {
+					result.Passed = false
+					result.Stage = StagePostHook
+					result.Err = fmt.Errorf("post_drill_command failed: %w", hookErr)
+				}
+			}
+		}
 	}()
 
 	if target.CleanupBackup {
 		defer func() {
-			// Never delete a failed backup: it is critical evidence needed for post-mortem debugging
 			if !result.Passed || result.Err != nil {
 				return
 			}
@@ -104,6 +126,21 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 		}()
 	}
 
+	// 1. Pre-drill hook
+	if target.PreDrillCommand != "" {
+		result.Stage = StagePreHook
+		if err := runHook(ctx, target.PreDrillCommand, target.HooksTimeout, map[string]string{
+			"LAZARUS_TARGET": target.Name,
+			"LAZARUS_ENGINE": string(target.Engine),
+			"LAZARUS_STAGE":  string(StagePreHook),
+		}); err != nil {
+			result.Err = fmt.Errorf("pre_drill_command failed: %w", err)
+			return
+		}
+	}
+
+	// 2. Fetch
+	result.Stage = StageFetch
 	if target.FetchCommand != "" {
 		if err := fetch.Run(ctx, target.FetchCommand, target.FetchTimeout); err != nil {
 			result.Err = err
@@ -144,54 +181,110 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 		}
 	}
 
+	// 3. Locate
 	result.Stage = StageLocate
-	file, err := backup.Locate(target.Path)
+	allFiles, err := backup.LocateAll(target.Path)
 	if err != nil {
 		result.Err = err
 		return
 	}
+	file := allFiles[0]
 	result.Backup = file
 
-	result.Stage = StageAge
+	// Run drill against primary (newest) backup
+	primaryErr, primaryStage := executeSingleDrill(ctx, target, file, baseline, hasBaseline, keepOnFailure, gpgPassphrase, &result)
+	if primaryErr == nil {
+		result.Stage = StageDone
+		result.Passed = true
+		return
+	}
+
+	// Primary drill failed. Check if fallback recovery drill is enabled.
+	if !target.FallbackOnFailure || len(allFiles) <= 1 {
+		result.Stage = primaryStage
+		result.Err = primaryErr
+		return
+	}
+
+	// Attempt fallback drills on older backups
+	maxDepth := target.MaxFallbackDepth
+	if maxDepth <= 0 {
+		maxDepth = 3
+	}
+
+	var fallbackFound bool
+	for i := 1; i < len(allFiles) && i <= maxDepth; i++ {
+		fallbackFile := allFiles[i]
+		fbResult := Result{Target: target.Name, Tags: target.Tags, SLARTO: target.SLARTO, Backup: fallbackFile}
+		fbErr, _ := executeSingleDrill(ctx, target, fallbackFile, baseline, hasBaseline, keepOnFailure, gpgPassphrase, &fbResult)
+		if fbErr == nil {
+			// Fallback succeeded!
+			fallbackFound = true
+			result.Passed = true
+			result.Stage = StageDone
+			result.Err = nil
+			result.Backup = fallbackFile
+			result.RestoreDuration = fbResult.RestoreDuration
+			result.Checks = fbResult.Checks
+			result.SchemaDrift = fbResult.SchemaDrift
+			result.FallbackUsed = true
+			result.FallbackBackup = fallbackFile
+			result.FallbackRPO = file.ModTime.Sub(fallbackFile.ModTime)
+			result.FallbackMessage = fmt.Sprintf("Primary backup %s failed (%v); successfully fell back to %s (RPO: %s)",
+				filepath.Base(file.Path), primaryErr, filepath.Base(fallbackFile.Path), result.FallbackRPO.Round(time.Second))
+			break
+		}
+	}
+
+	if !fallbackFound {
+		result.Stage = primaryStage
+		result.Err = fmt.Errorf("%w (fallback drill tried %d older backup(s), all failed)", primaryErr, min(len(allFiles)-1, maxDepth))
+	}
+	return
+}
+
+func executeSingleDrill(
+	ctx context.Context,
+	target config.Target,
+	file *backup.File,
+	baseline int64,
+	hasBaseline bool,
+	keepOnFailure bool,
+	gpgPassphrase string,
+	result *Result,
+) (drillErr error, drillStage Stage) {
+	// Age check
 	if target.MaxAge > 0 {
 		if age := file.Age(time.Now()); age > target.MaxAge {
-			result.Err = fmt.Errorf("newest backup is %s old, older than the %s limit", age.Round(time.Minute), target.MaxAge)
-			return
+			return fmt.Errorf("backup is %s old, older than the %s limit", age.Round(time.Minute), target.MaxAge), StageAge
 		}
 	}
 
-	result.Stage = StageSizeDrift
+	// Size drift check
 	if target.SizeDrift != nil && hasBaseline {
 		if exceedsSizeDrift(file.Size, baseline, target.SizeDrift.MaxDecreasePct) {
-			result.Err = sizeDriftError(file.Size, baseline, target.SizeDrift.MaxDecreasePct)
-			return
+			return sizeDriftError(file.Size, baseline, target.SizeDrift.MaxDecreasePct), StageSizeDrift
 		}
 	}
 
-	// Everything past this point differs only in how a target gets "restored"
-	// and how its checks run against the result: a container plus a real
-	// client for Postgres/MySQL, or just a disposable file copy for SQLite.
-	// runChecks is filled in by whichever path succeeds. RestoreDuration is
-	// timed inside each branch, starting only once any container is already
-	// up — sandbox startup isn't part of the restore this metric promises to
-	// report (see max_restore_duration in the README).
 	var runChecks func(context.Context) []check.Result
+	var inspectSchema func(context.Context) ([]schema.TableInfo, error)
+
+	sbOpts := sandbox.Options{
+		MemoryLimit:    target.MemoryLimit,
+		CPUs:           target.CPUs,
+		Network:        target.Network,
+		ReadOnlyRootfs: target.ReadOnlyRootfs,
+	}
 
 	if target.Engine == config.EngineSQLite {
-		result.Stage = StageRestore
 		restoreStarted := time.Now()
-
 		path, cleanup, err := sqlitecheck.Prepare(ctx, file, gpgPassphrase)
 		if err != nil {
-			result.Err = err
-			return
+			return err, StageRestore
 		}
-		// result is captured live: by the time this runs, result.Err
-		// reflects whatever the rest of Run ended up setting (or not), so
-		// this correctly decides keep-vs-clean-up after the fact regardless
-		// of which return path got there.
 		defer func() {
-			if keepOnFailure && result.Err != nil {
+			if keepOnFailure && (drillErr != nil || result.Err != nil) {
 				result.DebugHint = fmt.Sprintf("sqlite3 %s", path)
 				return
 			}
@@ -199,39 +292,37 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 		}()
 
 		if err := sqlitecheck.IntegrityCheck(ctx, path); err != nil {
-			result.Err = err
-			return
+			return err, StageRestore
 		}
 		result.RestoreDuration = time.Since(restoreStarted)
 		runChecks = func(ctx context.Context) []check.Result {
 			return sqlitecheck.RunChecks(ctx, path, target.Checks)
 		}
+		inspectSchema = func(ctx context.Context) ([]schema.TableInfo, error) {
+			return schema.Inspect(ctx, target.Engine, func(ctx context.Context, query string) (string, error) {
+				cmd := exec.CommandContext(ctx, "sqlite3", path, query)
+				out, err := cmd.CombinedOutput()
+				return string(out), err
+			})
+		}
 	} else if target.Engine == config.EngineRedis && file.Format == backup.FormatRedisRDB {
-		result.Stage = StageRestore
 		restoreStarted := time.Now()
-
 		rdbDir, cleanupRDB, err := redischeck.Prepare(ctx, file, gpgPassphrase)
 		if err != nil {
-			result.Err = err
-			return
+			return err, StageRestore
 		}
 		defer cleanupRDB()
 
-		result.Stage = StageSandbox
-		sb, err := sandbox.StartWithOptions(ctx, target.Engine, target.Image, sandbox.Options{
-			DataDir:     rdbDir,
-			MemoryLimit: target.MemoryLimit,
-			CPUs:        target.CPUs,
-		})
+		sbOpts.DataDir = rdbDir
+		sb, err := sandbox.StartWithOptions(ctx, target.Engine, target.Image, sbOpts)
 		if err != nil {
-			result.Err = err
-			return
+			return err, StageSandbox
 		}
 		defer func() {
-			if result.Err != nil && sb != nil {
+			if (drillErr != nil || result.Err != nil) && sb != nil {
 				result.LogsTail = sb.LogsTail(ctx, 50)
 			}
-			if keepOnFailure && result.Err != nil {
+			if keepOnFailure && (drillErr != nil || result.Err != nil) {
 				result.DebugHint = debugHint(sb)
 				return
 			}
@@ -241,64 +332,150 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 		result.RestoreDuration = time.Since(restoreStarted)
 		runChecks = func(ctx context.Context) []check.Result {
 			return check.RunAll(ctx, sb, target.Engine, target.Checks)
+		}
+		inspectSchema = func(ctx context.Context) ([]schema.TableInfo, error) {
+			return nil, nil // Redis has no relational table schema
 		}
 	} else {
-		result.Stage = StageSandbox
-		sb, err := sandbox.StartWithOptions(ctx, target.Engine, target.Image, sandbox.Options{
-			MemoryLimit: target.MemoryLimit,
-			CPUs:        target.CPUs,
-		})
+		sb, err := sandbox.StartWithOptions(ctx, target.Engine, target.Image, sbOpts)
 		if err != nil {
-			result.Err = err
-			return
+			return err, StageSandbox
 		}
 		defer func() {
-			if result.Err != nil && sb != nil {
+			if (drillErr != nil || result.Err != nil) && sb != nil {
 				result.LogsTail = sb.LogsTail(ctx, 50)
 			}
-			if keepOnFailure && result.Err != nil {
+			if keepOnFailure && (drillErr != nil || result.Err != nil) {
 				result.DebugHint = debugHint(sb)
 				return
 			}
 			sb.Stop()
 		}()
 
-		result.Stage = StageRestore
 		restoreStarted := time.Now()
 		if _, err := restore.Run(ctx, sb, target.Engine, file, gpgPassphrase); err != nil {
-			result.Err = err
-			return
+			return err, StageRestore
 		}
 		result.RestoreDuration = time.Since(restoreStarted)
 		runChecks = func(ctx context.Context) []check.Result {
 			return check.RunAll(ctx, sb, target.Engine, target.Checks)
 		}
+		inspectSchema = func(ctx context.Context) ([]schema.TableInfo, error) {
+			return schema.Inspect(ctx, target.Engine, func(ctx context.Context, q string) (string, error) {
+				return querySandbox(ctx, sb, target.Engine, q)
+			})
+		}
 	}
 
-	result.Stage = StageRTO
 	if exceedsRTO(result.RestoreDuration, target.MaxRestoreDuration) {
-		result.Err = rtoError(result.RestoreDuration, target.MaxRestoreDuration)
-		return
+		return rtoError(result.RestoreDuration, target.MaxRestoreDuration), StageRTO
 	}
 
-	result.Stage = StageChecks
+	// Schema drift inspection
+	if target.AutoSchemaCheck && inspectSchema != nil {
+		tables, err := inspectSchema(ctx)
+		if err != nil {
+			return fmt.Errorf("schema inspection failed: %w", err), StageSchema
+		}
+		drift := schema.CompareWithNames(tables, target.SchemaBaseline)
+		result.SchemaDrift = &drift
+		if len(drift.MissingTables) > 0 {
+			return fmt.Errorf("schema validation failed: missing expected tables %v", drift.MissingTables), StageSchema
+		}
+	}
+
+	// Checks
 	result.Checks = runChecks(ctx)
 	for _, c := range result.Checks {
 		if !c.Passed {
-			result.Err = fmt.Errorf("check %q failed: %s", c.Name, c.Reason)
-			return
+			return fmt.Errorf("check %q failed: %s", c.Name, c.Reason), StageChecks
 		}
 	}
 
-	result.Stage = StageDone
-	result.Passed = true
-	return
+	return nil, StageDone
 }
 
-// debugHint builds a ready-to-paste command for connecting to a kept
-// sandbox. The container's port is never published to the host (see
-// sandbox.Start), so this goes through `docker exec` rather than a direct
-// client connection from outside the container.
+func querySandbox(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, q string) (string, error) {
+	var args []string
+	switch engine {
+	case config.EnginePostgres:
+		args = []string{
+			"psql",
+			"--username", sandbox.User(),
+			"--dbname", sandbox.DBName(),
+			"--tuples-only", "--no-align",
+			"--set", "ON_ERROR_STOP=1",
+			"--command", q,
+		}
+	case config.EngineMySQL:
+		args = []string{
+			"mysql",
+			"--user=root",
+			"--password=" + sandbox.Password(),
+			"--skip-column-names", "--batch",
+			"--execute=" + q,
+			sandbox.DBName(),
+		}
+	case config.EngineMongoDB:
+		evalCode := fmt.Sprintf("const db = db.getSiblingDB('%s'); print(%s)", sandbox.DBName(), q)
+		args = []string{
+			"mongosh",
+			"--username", sandbox.User(),
+			"--password=" + sandbox.Password(),
+			"--authenticationDatabase", "admin",
+			"--quiet",
+			"--eval", evalCode,
+		}
+	default:
+		return "", fmt.Errorf("unsupported engine for schema inspection: %s", engine)
+	}
+	return sb.Exec(ctx, "", args...)
+}
+
+func runHook(ctx context.Context, cmdStr string, timeout time.Duration, env map[string]string) error {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
+	cmd.Env = os.Environ()
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("command timed out after %s: %s", timeout, string(out))
+		}
+		return fmt.Errorf("%v: %s", err, string(out))
+	}
+	return nil
+}
+
+func hookStatus(passed bool) string {
+	if passed {
+		return "PASSED"
+	}
+	return "FAILED"
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func backupPath(f *backup.File) string {
+	if f == nil {
+		return ""
+	}
+	return f.Path
+}
+
+// debugHint builds a ready-to-paste command for connecting to a kept sandbox.
 func debugHint(sb *sandbox.Sandbox) string {
 	switch sb.Engine {
 	case config.EngineMySQL:
@@ -315,22 +492,17 @@ func debugHint(sb *sandbox.Sandbox) string {
 	}
 }
 
-// exceedsRTO reports whether a restore blew through its configured time
-// budget. limit <= 0 means no budget was set.
+// exceedsRTO reports whether a restore blew through its configured time budget.
 func exceedsRTO(actual, limit time.Duration) bool {
 	return limit > 0 && actual > limit
 }
 
 func rtoError(actual, limit time.Duration) error {
-	// Millisecond precision: a sub-second restore against a very tight
-	// limit would otherwise round down to a nonsensical "0s".
 	return fmt.Errorf("restore took %s, longer than the %s RTO limit",
 		actual.Round(time.Millisecond), limit)
 }
 
-// exceedsSizeDrift reports whether current is a suspicious shrink from
-// baseline. Growth, or staying the same, never counts as drift — only a
-// backup getting smaller signals data quietly going missing.
+// exceedsSizeDrift reports whether current is a suspicious shrink from baseline.
 func exceedsSizeDrift(current, baseline int64, maxDecreasePct float64) bool {
 	if baseline <= 0 || current >= baseline {
 		return false
@@ -345,22 +517,7 @@ func sizeDriftError(current, baseline int64, maxDecreasePct float64) error {
 		decreasePct, backup.HumanSize(baseline), backup.HumanSize(current), maxDecreasePct)
 }
 
-// RunAll verifies every target, continuing past failures so one broken
-// backup doesn't hide the state of the others. st supplies each target's
-// size-drift baseline and is updated in place with the size from every
-// target that fully passes — a run that fails never moves the baseline, so
-// a genuinely broken backup can't quietly become the new normal.
-//
-// Up to parallelism targets are verified concurrently — each one's restore
-// is already fully isolated (its own sandbox container, or its own
-// throwaway file for SQLite), so there's no shared state between them to
-// serialize on other than st, which is already safe for concurrent use.
-// parallelism <= 0 is treated as 1. Results are returned in the same order
-// as targets, regardless of which finished first. keepOnFailure is passed
-// straight through to each target's Run — with several targets failing at
-// once, each one that qualifies gets its own kept sandbox, left for the
-// caller to inspect and clean up individually. gpgPassphrase is passed
-// straight through to each target's Run.
+// RunAll verifies every target, continuing past failures.
 func RunAll(ctx context.Context, targets []config.Target, st *state.State, parallelism int, keepOnFailure bool, gpgPassphrase string) []Result {
 	if parallelism <= 0 {
 		parallelism = 1

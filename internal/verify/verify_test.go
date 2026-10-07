@@ -645,3 +645,140 @@ func TestCleanupBackup(t *testing.T) {
 		t.Fatalf("expected backup file %s to be deleted, stat err: %v", sourceDB, err)
 	}
 }
+
+func TestPreAndPostDrillCommands(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+	sourceDB := sqliteBackup(t, dir, "backup.db", 2)
+	preMarker := filepath.Join(dir, "pre_marker.txt")
+	postMarker := filepath.Join(dir, "post_marker.txt")
+
+	target := config.Target{
+		Name:             "hooks-test",
+		Engine:           config.EngineSQLite,
+		Path:             sourceDB,
+		PreDrillCommand:  fmt.Sprintf("echo $LAZARUS_TARGET > %s", preMarker),
+		PostDrillCommand: fmt.Sprintf("echo $LAZARUS_STATUS:$LAZARUS_TARGET > %s", postMarker),
+		HooksTimeout:     5 * time.Second,
+	}
+
+	res := Run(context.Background(), target, 0, false, false, "")
+	if !res.Passed {
+		t.Fatalf("run failed: %v", res.Err)
+	}
+
+	preContent, err := os.ReadFile(preMarker)
+	if err != nil {
+		t.Fatalf("failed reading pre marker: %v", err)
+	}
+	if strings.TrimSpace(string(preContent)) != "hooks-test" {
+		t.Errorf("pre content = %q, want 'hooks-test'", string(preContent))
+	}
+
+	postContent, err := os.ReadFile(postMarker)
+	if err != nil {
+		t.Fatalf("failed reading post marker: %v", err)
+	}
+	if strings.TrimSpace(string(postContent)) != "PASSED:hooks-test" {
+		t.Errorf("post content = %q, want 'PASSED:hooks-test'", string(postContent))
+	}
+}
+
+func TestPreDrillCommandFailureAborts(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+	sourceDB := sqliteBackup(t, dir, "backup.db", 2)
+
+	target := config.Target{
+		Name:            "pre-fail-test",
+		Engine:          config.EngineSQLite,
+		Path:            sourceDB,
+		PreDrillCommand: "exit 1",
+	}
+
+	res := Run(context.Background(), target, 0, false, false, "")
+	if res.Passed {
+		t.Fatal("expected run to fail on pre hook error")
+	}
+	if res.Stage != StagePreHook {
+		t.Errorf("Stage = %q, want %q", res.Stage, StagePreHook)
+	}
+}
+
+func TestFallbackOnFailureRecovers(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+
+	// Create older valid backup
+	oldPath := sqliteBackup(t, dir, "backup_2026-01-01.db", 3)
+	oldTime := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(oldPath, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create newer corrupt backup
+	newPath := filepath.Join(dir, "backup_2026-01-02.db")
+	if err := os.WriteFile(newPath, []byte("corrupt data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	newTime := time.Now()
+	if err := os.Chtimes(newPath, newTime, newTime); err != nil {
+		t.Fatal(err)
+	}
+
+	target := config.Target{
+		Name:              "fallback-test",
+		Engine:            config.EngineSQLite,
+		Path:              filepath.Join(dir, "backup_*.db"),
+		FallbackOnFailure: true,
+		MaxFallbackDepth:  2,
+		Checks: []config.Check{
+			{Name: "users exist", SQL: "SELECT count(*) FROM users", Min: int64ptr(1)},
+		},
+	}
+
+	res := Run(context.Background(), target, 0, false, false, "")
+	if !res.Passed {
+		t.Fatalf("expected run to pass with fallback, got err: %v", res.Err)
+	}
+	if !res.FallbackUsed {
+		t.Error("expected FallbackUsed to be true")
+	}
+	if res.FallbackBackup == nil || filepath.Base(res.FallbackBackup.Path) != "backup_2026-01-01.db" {
+		t.Errorf("expected fallback backup to be backup_2026-01-01.db, got %v", res.FallbackBackup)
+	}
+	if res.FallbackRPO < 1*time.Hour {
+		t.Errorf("expected FallbackRPO ~2 hours, got %v", res.FallbackRPO)
+	}
+	if !strings.Contains(res.FallbackMessage, "successfully fell back") {
+		t.Errorf("FallbackMessage = %q, expected recovery mention", res.FallbackMessage)
+	}
+}
+
+func TestAutoSchemaCheckSQLite(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+	path := sqliteBackup(t, dir, "backup.db", 3)
+
+	target := config.Target{
+		Name:            "schema-check-test",
+		Engine:          config.EngineSQLite,
+		Path:            path,
+		AutoSchemaCheck: true,
+		SchemaBaseline:  []string{"users", "non_existent_table"},
+	}
+
+	res := Run(context.Background(), target, 0, false, false, "")
+	if res.Passed {
+		t.Fatal("expected failure due to missing table non_existent_table")
+	}
+	if res.Stage != StageSchema {
+		t.Errorf("Stage = %q, want %q", res.Stage, StageSchema)
+	}
+	if res.SchemaDrift == nil || len(res.SchemaDrift.MissingTables) == 0 {
+		t.Fatal("expected SchemaDrift to report missing table")
+	}
+	if res.SchemaDrift.MissingTables[0] != "non_existent_table" {
+		t.Errorf("missing table = %q, want non_existent_table", res.SchemaDrift.MissingTables[0])
+	}
+}

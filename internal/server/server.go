@@ -29,16 +29,18 @@ type Config struct {
 }
 
 type Server struct {
-	cfg         Config
-	store       *Store
-	mux         *http.ServeMux
-	httpSrv     *http.Server
-	httpSrvMu   sync.Mutex
-	startTime   time.Time
-	alertMu     sync.Mutex
-	lastAlerted map[string]time.Time
-	alertStop   chan struct{}
-	alertDone   chan struct{}
+	cfg           Config
+	store         *Store
+	mux           *http.ServeMux
+	httpSrv       *http.Server
+	httpSrvMu     sync.Mutex
+	startTime     time.Time
+	alertMu       sync.Mutex
+	lastAlerted   map[string]time.Time
+	alertStop     chan struct{}
+	alertDone     chan struct{}
+	streamClients map[chan []byte]struct{}
+	streamMu      sync.RWMutex
 }
 
 func New(cfg Config) *Server {
@@ -56,13 +58,14 @@ func New(cfg Config) *Server {
 		store.SeedDemoData()
 	}
 	s := &Server{
-		cfg:         cfg,
-		store:       store,
-		mux:         http.NewServeMux(),
-		startTime:   time.Now(),
-		lastAlerted: make(map[string]time.Time),
-		alertStop:   make(chan struct{}),
-		alertDone:   make(chan struct{}),
+		cfg:           cfg,
+		store:         store,
+		mux:           http.NewServeMux(),
+		startTime:     time.Now(),
+		lastAlerted:   make(map[string]time.Time),
+		alertStop:     make(chan struct{}),
+		alertDone:     make(chan struct{}),
+		streamClients: make(map[chan []byte]struct{}),
 	}
 	s.routes()
 	if cfg.AlertWebhookURL != "" {
@@ -125,6 +128,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/summary", s.handleGetSummary)
 	s.mux.HandleFunc("GET /api/v1/export/csv", s.handleExportCSV)
 	s.mux.HandleFunc("GET /api/v1/export/certificate.pdf", s.handleExportPDF)
+	s.mux.HandleFunc("GET /api/v1/stream", s.handleStream)
 }
 
 func (s *Server) checkAuth(r *http.Request) bool {
@@ -146,6 +150,20 @@ func (s *Server) checkAuth(r *http.Request) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+func (s *Server) checkStreamAuth(r *http.Request) bool {
+	if s.checkAuth(r) {
+		return true
+	}
+	if s.cfg.APIKey == "" {
+		return true
+	}
+	key := r.URL.Query().Get("api_key")
+	if key != "" && subtle.ConstantTimeCompare([]byte(key), []byte(s.cfg.APIKey)) == 1 {
+		return true
 	}
 	return false
 }
@@ -198,6 +216,7 @@ func (s *Server) handlePostReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.store.RecordReport(rep)
+	s.Broadcast("drill_report", rep)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -275,6 +294,7 @@ func (s *Server) handleTriggerTarget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusNotFound)
 		return
 	}
+	s.Broadcast("drill_triggered", map[string]string{"target": name})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]any{
@@ -495,6 +515,76 @@ func (s *Server) CheckAndSendAlerts() {
 			s.alertMu.Unlock()
 		} else {
 			log.Printf("lazarus-server: alert delivery for target %q returned status %d", t.Name, resp.StatusCode)
+		}
+	}
+}
+
+// Broadcast sends an SSE event to all connected live clients.
+func (s *Server) Broadcast(eventType string, payload any) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	msg := []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, string(data)))
+
+	s.streamMu.RLock()
+	defer s.streamMu.RUnlock()
+
+	for ch := range s.streamClients {
+		select {
+		case ch <- msg:
+		default:
+			// Client buffer full, skip
+		}
+	}
+}
+
+func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
+	if !s.checkStreamAuth(r) {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, `{"error":"streaming unsupported"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	msgCh := make(chan []byte, 32)
+	s.streamMu.Lock()
+	s.streamClients[msgCh] = struct{}{}
+	s.streamMu.Unlock()
+
+	defer func() {
+		s.streamMu.Lock()
+		delete(s.streamClients, msgCh)
+		s.streamMu.Unlock()
+	}()
+
+	// Send initial connected ping
+	initData, _ := json.Marshal(map[string]any{"status": "connected", "time": time.Now().UTC()})
+	fmt.Fprintf(w, "event: connected\ndata: %s\n\n", initData)
+	flusher.Flush()
+
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case msg := <-msgCh:
+			_, _ = w.Write(msg)
+			flusher.Flush()
+		case <-ticker.C:
+			_, _ = w.Write([]byte(": ping\n\n"))
+			flusher.Flush()
 		}
 	}
 }

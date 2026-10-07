@@ -128,6 +128,30 @@ targets:
     # Postgres 16 won't restore into 14.
     image: postgres:16-alpine
 
+    # Sandbox Security Hardening:
+    # network: none isolates sandbox from internet (blocks SQL-injection SSRF or exfiltration)
+    # read_only_rootfs: true mounts container root as read-only
+    # network: none
+    # read_only_rootfs: true
+
+    # Pre/Post Drill Lifecycle Hooks:
+    # Environment variables injected: $LAZARUS_TARGET, $LAZARUS_ENGINE, $LAZARUS_STATUS,
+    # $LAZARUS_STAGE, $LAZARUS_DURATION_MS, $LAZARUS_RESTORE_DURATION_MS, etc.
+    # pre_drill_command: "echo 'Drill started for $LAZARUS_TARGET'"
+    # post_drill_command: "echo 'Drill finished: $LAZARUS_STATUS (took $LAZARUS_RESTORE_DURATION_MS ms)'"
+    # hooks_timeout: 30s
+
+    # Fallback Disaster Recovery Drill & Real RPO Analysis:
+    # When enabled, if the newest backup fails, Lazarus automatically attempts
+    # previous backup files up to max_fallback_depth and calculates true achievable RPO.
+    fallback_on_failure: true
+    max_fallback_depth: 3
+
+    # Automated Schema & Table Drift Inspection:
+    # Introspects table counts and verifies expected tables exist after restore.
+    auto_schema_check: true
+    schema_baseline: [users, orders, schema_migrations]
+
     # The restore "succeeding" isn't enough: a schema-only dump restores
     # fine and leaves you with an empty database. These assertions are what
     # prove the backup carries real data.

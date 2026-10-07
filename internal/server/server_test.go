@@ -612,3 +612,46 @@ func TestExportPDF(t *testing.T) {
 		t.Errorf("PDF missing certificate header string")
 	}
 }
+
+func TestStreamSSE(t *testing.T) {
+	s := New(Config{DemoMode: true})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want 'text/event-stream'", ct)
+	}
+
+	// Trigger broadcast
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		s.Broadcast("test_event", map[string]string{"foo": "bar"})
+	}()
+
+	buf := make([]byte, 1024)
+	n, err := resp.Body.Read(buf)
+	if err != nil && n == 0 {
+		t.Fatalf("failed to read from sse stream: %v", err)
+	}
+	received := string(buf[:n])
+	if !strings.Contains(received, "event: connected") {
+		t.Errorf("expected 'event: connected' in initial chunk, got: %q", received)
+	}
+}
