@@ -3,6 +3,7 @@ package check
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"lazarus/internal/config"
 )
@@ -186,5 +187,68 @@ func TestEvaluateString(t *testing.T) {
 	}
 	if !strings.Contains(reason, "want exactly") {
 		t.Errorf("unexpected failure reason: %s", reason)
+	}
+}
+
+func TestParseTimestamp(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		wantErr bool
+	}{
+		{name: "RFC3339", raw: "2026-10-07T14:30:00Z", wantErr: false},
+		{name: "SQL standard", raw: "2026-10-07 14:30:00", wantErr: false},
+		{name: "Date only", raw: "2026-10-07", wantErr: false},
+		{name: "Unix epoch seconds", raw: "1791350400", wantErr: false},
+		{name: "Unix epoch millis", raw: "1791350400000", wantErr: false},
+		{name: "Quoted timestamp", raw: `"2026-10-07 14:30:00"`, wantErr: false},
+		{name: "Invalid text", raw: "not-a-timestamp", wantErr: true},
+		{name: "Empty string", raw: "   ", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseTimestamp(tc.raw)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("ParseTimestamp(%q) error = %v, wantErr %v", tc.raw, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestEvaluateRPO(t *testing.T) {
+	now := time.Now().UTC()
+	recent := now.Add(-10 * time.Minute).Format("2006-01-02 15:04:05")
+	stale := now.Add(-48 * time.Hour).Format("2006-01-02 15:04:05")
+
+	chk := config.Check{
+		MaxRPO: 1 * time.Hour,
+	}
+
+	// 1. Recent timestamp: complies with RPO
+	passed, lag, reason := EvaluateRPO(recent, chk)
+	if !passed {
+		t.Errorf("expected recent timestamp to pass RPO, got fail: %s", reason)
+	}
+	if lag < 9*time.Minute || lag > 11*time.Minute {
+		t.Errorf("unexpected lag duration: %v", lag)
+	}
+
+	// 2. Stale timestamp: violates RPO
+	passed, lag, reason = EvaluateRPO(stale, chk)
+	if passed {
+		t.Errorf("expected 48h stale timestamp to violate 1h RPO, but it passed")
+	}
+	if !strings.Contains(reason, "RPO exceeded") {
+		t.Errorf("expected reason to mention 'RPO exceeded', got: %s", reason)
+	}
+
+	// 3. Invalid timestamp format: fails gracefully
+	passed, _, reason = EvaluateRPO("garbage-time", chk)
+	if passed {
+		t.Errorf("expected invalid timestamp to fail")
+	}
+	if !strings.Contains(reason, "invalid timestamp") {
+		t.Errorf("unexpected error message: %s", reason)
 	}
 }

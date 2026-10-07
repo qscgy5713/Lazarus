@@ -245,6 +245,8 @@ func TestMetricsEndpoint(t *testing.T) {
 		"lazarus_remediation_status{target=",
 		"lazarus_sla_compliance_rate",
 		"lazarus_mttr_seconds",
+		"lazarus_target_rpo_lag_seconds{target=",
+		"lazarus_target_rpo_compliant{target=",
 	}
 
 	for _, metric := range expectedMetrics {

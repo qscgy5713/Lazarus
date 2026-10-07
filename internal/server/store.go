@@ -83,6 +83,9 @@ func (s *Store) RecordReport(report InboundReport) {
 		rec.DiskFootprintBytes = res.DiskFootprintBytes
 		rec.IncrementalPatchesApplied = res.IncrementalPatchesApplied
 		rec.Remediation = res.Remediation
+		rec.HasRPOCheck = res.HasRPOCheck
+		rec.MaxRPOLagSec = res.MaxRPOLagSec
+		rec.RPOViolated = res.RPOViolated
 		rec.SLARTOMs = res.SLARTOMs
 		rec.SLARTO = ""
 		if res.SLARTOMs > 0 {
@@ -126,6 +129,9 @@ func (s *Store) RecordReport(report InboundReport) {
 			DiskFootprintBytes:        res.DiskFootprintBytes,
 			IncrementalPatchesApplied: res.IncrementalPatchesApplied,
 			Remediation:               res.Remediation,
+			HasRPOCheck:               res.HasRPOCheck,
+			MaxRPOLagSec:              res.MaxRPOLagSec,
+			RPOViolated:               res.RPOViolated,
 		})
 		if len(rec.RecentHistory) > 20 {
 			rec.RecentHistory = rec.RecentHistory[len(rec.RecentHistory)-20:]
@@ -469,9 +475,12 @@ func (s *Store) SeedDemoData() {
 					BackupAge:         "2h15m",
 					DurationMs:        10240,
 					RestoreDurationMs: 7820,
+					HasRPOCheck:       true,
+					MaxRPOLagSec:      900.0,
+					RPOViolated:       false,
 					Checks: []InboundCheck{
 						{Name: "users table is populated", Passed: true, Value: 1841},
-						{Name: "orders from last week made it in", Passed: true, Value: 327},
+						{Name: "orders from last week made it in", Passed: true, Value: 327, IsRPOCheck: true, RPOLagSec: 900.0},
 					},
 				},
 				{

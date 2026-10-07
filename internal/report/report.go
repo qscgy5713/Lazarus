@@ -92,9 +92,19 @@ func Text(w io.Writer, results []verify.Result, quiet bool) bool {
 				fmt.Fprintf(w, "      schema WARNING: empty tables %v\n", r.SchemaDrift.EmptyTables)
 			}
 		}
+		if r.HasRPOCheck {
+			rpoStatus := "PASS"
+			if r.RPOViolated {
+				rpoStatus = "VIOLATED"
+			}
+			fmt.Fprintf(w, "      data freshness (RPO): lag %s (status: %s)\n", r.MaxRPOLag.Round(time.Second), rpoStatus)
+		}
 		for _, c := range r.Checks {
 			status := "ok"
 			detail := fmt.Sprintf("= %d", c.Value)
+			if c.IsRPOCheck {
+				detail = fmt.Sprintf("lag %s", c.RPOLag.Round(time.Second))
+			}
 			if !c.Passed {
 				status, detail = "FAILED", c.Reason
 			}
@@ -140,13 +150,18 @@ type jsonResult struct {
 	DiskFootprintBytes        int64                    `json:"disk_footprint_bytes,omitempty"`
 	IncrementalPatchesApplied []string                 `json:"incremental_patches_applied,omitempty"`
 	Remediation               *verify.RemediationResult `json:"remediation,omitempty"`
+	HasRPOCheck               bool                      `json:"has_rpo_check,omitempty"`
+	MaxRPOLagSec              float64                   `json:"max_rpo_lag_seconds,omitempty"`
+	RPOViolated               bool                      `json:"rpo_violated,omitempty"`
 }
 
 type jsonCheck struct {
-	Name   string `json:"name"`
-	Passed bool   `json:"passed"`
-	Value  int64  `json:"value"`
-	Reason string `json:"reason,omitempty"`
+	Name       string  `json:"name"`
+	Passed     bool    `json:"passed"`
+	Value      int64   `json:"value"`
+	Reason     string  `json:"reason,omitempty"`
+	IsRPOCheck bool    `json:"is_rpo_check,omitempty"`
+	RPOLagSec  float64 `json:"rpo_lag_seconds,omitempty"`
 }
 
 // JSON writes machine-readable output and reports whether everything passed.
@@ -170,6 +185,9 @@ func JSON(w io.Writer, results []verify.Result) bool {
 			DiskFootprintBytes:        r.DiskFootprintBytes,
 			IncrementalPatchesApplied: r.IncrementalPatchesApplied,
 			Remediation:               r.Remediation,
+			HasRPOCheck:               r.HasRPOCheck,
+			MaxRPOLagSec:              r.MaxRPOLag.Seconds(),
+			RPOViolated:               r.RPOViolated,
 		}
 		if r.Err != nil {
 			jr.Error = r.Err.Error()
@@ -197,12 +215,17 @@ func JSON(w io.Writer, results []verify.Result) bool {
 			jr.SchemaEmptyTables = r.SchemaDrift.EmptyTables
 		}
 		for _, c := range r.Checks {
-			jr.Checks = append(jr.Checks, jsonCheck{
-				Name:   c.Name,
-				Passed: c.Passed,
-				Value:  c.Value,
-				Reason: c.Reason,
-			})
+			jc := jsonCheck{
+				Name:       c.Name,
+				Passed:     c.Passed,
+				Value:      c.Value,
+				Reason:     c.Reason,
+				IsRPOCheck: c.IsRPOCheck,
+			}
+			if c.IsRPOCheck {
+				jc.RPOLagSec = c.RPOLag.Seconds()
+			}
+			jr.Checks = append(jr.Checks, jc)
 		}
 		out = append(out, jr)
 	}

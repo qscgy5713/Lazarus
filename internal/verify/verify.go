@@ -96,6 +96,11 @@ type Result struct {
 
 	// Incident remediation playbook execution result
 	Remediation *RemediationResult
+
+	// RPO data lag evaluation
+	HasRPOCheck bool
+	MaxRPOLag   time.Duration
+	RPOViolated bool
 }
 
 // RemediationResult captures the execution details and outcome of an incident remediation playbook.
@@ -544,6 +549,15 @@ func executeSingleDrill(
 	}
 	result.Checks = runChecks(ctx)
 	for _, c := range result.Checks {
+		if c.IsRPOCheck {
+			result.HasRPOCheck = true
+			if c.RPOLag > result.MaxRPOLag {
+				result.MaxRPOLag = c.RPOLag
+			}
+			if !c.Passed {
+				result.RPOViolated = true
+			}
+		}
 		if !c.Passed {
 			return fmt.Errorf("check %q failed: %s", c.Name, c.Reason), StageChecks
 		}

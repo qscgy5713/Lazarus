@@ -231,6 +231,7 @@ targets:
 - `expect_equal`：剛好等於多少
 - `expect_pattern`：**正向正則表達式斷言**，文字結果必須匹配正則模式（例如版本格式驗證 `^v?\d+\.\d+\.\d+`）
 - `expect_not_pattern`：**資料脫敏防洩漏斷言**，結果**絕對不可匹配**正則模式（例如檢查測試/匯出備份中的個資欄位是否確實已遮罩，若洩漏未脫敏 Email `[a-zA-Z0-9._%+-]+@gmail\.com` 則判定演練失敗）
+- `max_rpo`（或 `max_lag`）：**RPO 資料復原點延遲檢驗**，查詢回傳資料庫內最新時間戳（支援 ISO8601、RFC3339、SQL Datetime、Unix Timestamp），若與目前時間落後差距（Data Lag）超過此設定值（例如 `1h`、`24h`）則判定違反 RPO SLA。
 
 ```yaml
 checks:
@@ -243,6 +244,11 @@ checks:
   - name: user emails are properly anonymized
     sql: SELECT email FROM users WHERE email LIKE '%@gmail.com' LIMIT 1
     expect_not_pattern: "[a-zA-Z0-9._%+-]+@gmail\\.com"
+
+  # RPO 資料新鮮度驗證：確保備份檔內部最新交易記錄未嚴重落後
+  - name: latest transaction conforms to RPO
+    sql: SELECT max(created_at) FROM transactions
+    max_rpo: 1h   # 若資料落後超過 1 小時即判定 RPO 違約
 ```
 
 ### 還原時間上限（RTO）
@@ -862,6 +868,8 @@ docker compose run --rm --entrypoint sh \
   - `lazarus_remediation_status`：自動修復劇本執行狀態（1=成功, 0=失敗, -1=未觸發）
   - `lazarus_sla_compliance_rate`：全域與組織級 SLA RTO 達標率百分比 (0-100)
   - `lazarus_mttr_seconds`：整體平均還原時間（MTTR）秒數
+  - `lazarus_target_rpo_lag_seconds`：目標最新資料記錄相對於演練當下的真實落後時間（RPO Data Lag 秒數）
+  - `lazarus_target_rpo_compliant`：目標是否符合設定的 RPO 復原點 SLA 承諾（1=達標, 0=違約）
   專案於 [`examples/grafana/lazarus-dashboard.json`](examples/grafana/lazarus-dashboard.json) 提供預先配置好的 Grafana 視覺化儀表板，支援一鍵匯入。
 - **Kubernetes 原生健康探針 (`/healthz` 與 `/readyz`)**：符合雲原生標準，提供存活探針（Liveness: `/healthz`，輸出運行時間與目標數）與就緒探針（Readiness: `/readyz`，檢驗狀態儲存可用性）。
 - **純 Go 輕量單一執行檔**：無需額外架設 PostgreSQL/MySQL 或 Redis，自帶內嵌 Web 介面與持久化狀態，資源消耗低於 20MB RAM。

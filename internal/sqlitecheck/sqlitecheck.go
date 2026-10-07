@@ -117,6 +117,13 @@ func runCheck(ctx context.Context, path string, c config.Check) check.Result {
 		return result
 	}
 
+	if c.MaxRPO > 0 {
+		result.IsRPOCheck = true
+		result.RawTimestamp = strings.TrimSpace(raw)
+		result.Passed, result.RPOLag, result.Reason = check.EvaluateRPO(raw, c)
+		return result
+	}
+
 	if c.ExpectString != nil {
 		result.Passed, result.Reason = check.EvaluateString(raw, c)
 		return result

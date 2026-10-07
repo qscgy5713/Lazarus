@@ -34,6 +34,9 @@ type InboundResult struct {
 	DiskFootprintBytes        int64              `json:"disk_footprint_bytes,omitempty"`
 	IncrementalPatchesApplied []string           `json:"incremental_patches_applied,omitempty"`
 	Remediation               *RemediationRecord `json:"remediation,omitempty"`
+	HasRPOCheck               bool               `json:"has_rpo_check,omitempty"`
+	MaxRPOLagSec              float64            `json:"max_rpo_lag_seconds,omitempty"`
+	RPOViolated               bool               `json:"rpo_violated,omitempty"`
 }
 
 // RemediationRecord describes the outcome of an automated disaster recovery remediation playbook.
@@ -47,10 +50,12 @@ type RemediationRecord struct {
 }
 
 type InboundCheck struct {
-	Name   string `json:"name"`
-	Passed bool   `json:"passed"`
-	Value  int64  `json:"value"`
-	Reason string `json:"reason,omitempty"`
+	Name       string  `json:"name"`
+	Passed     bool    `json:"passed"`
+	Value      int64   `json:"value"`
+	Reason     string  `json:"reason,omitempty"`
+	IsRPOCheck bool    `json:"is_rpo_check,omitempty"`
+	RPOLagSec  float64 `json:"rpo_lag_seconds,omitempty"`
 }
 
 // TargetStatus is the calculated health status of a database target.
@@ -91,6 +96,9 @@ type TargetRecord struct {
 	DiskFootprintBytes        int64              `json:"disk_footprint_bytes,omitempty"`
 	IncrementalPatchesApplied []string           `json:"incremental_patches_applied,omitempty"`
 	Remediation               *RemediationRecord `json:"remediation,omitempty"`
+	HasRPOCheck               bool               `json:"has_rpo_check,omitempty"`
+	MaxRPOLagSec              float64            `json:"max_rpo_lag_seconds,omitempty"`
+	RPOViolated               bool               `json:"rpo_violated,omitempty"`
 	RecentHistory             []HistoryRecord    `json:"recent_history,omitempty"`
 }
 
@@ -113,6 +121,9 @@ type HistoryRecord struct {
 	DiskFootprintBytes        int64              `json:"disk_footprint_bytes,omitempty"`
 	IncrementalPatchesApplied []string           `json:"incremental_patches_applied,omitempty"`
 	Remediation               *RemediationRecord `json:"remediation,omitempty"`
+	HasRPOCheck               bool               `json:"has_rpo_check,omitempty"`
+	MaxRPOLagSec              float64            `json:"max_rpo_lag_seconds,omitempty"`
+	RPOViolated               bool               `json:"rpo_violated,omitempty"`
 }
 
 type Summary struct {

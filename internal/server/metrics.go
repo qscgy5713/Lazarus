@@ -113,6 +113,27 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	buf.WriteString("# TYPE lazarus_mttr_seconds gauge\n")
 	fmt.Fprintf(&buf, "lazarus_mttr_seconds %.3f\n", float64(summary.AvgRestoreMs)/1000.0)
 
+	// 11. RPO Data Lag Seconds & Compliance
+	buf.WriteString("\n# HELP lazarus_target_rpo_lag_seconds Measured data lag (RPO) in seconds between latest record and drill execution.\n")
+	buf.WriteString("# TYPE lazarus_target_rpo_lag_seconds gauge\n")
+	for _, t := range targets {
+		if t.HasRPOCheck {
+			fmt.Fprintf(&buf, "lazarus_target_rpo_lag_seconds{target=%q} %.3f\n", t.Name, t.MaxRPOLagSec)
+		}
+	}
+
+	buf.WriteString("\n# HELP lazarus_target_rpo_compliant Whether the target conforms to its configured RPO SLA (1=compliant, 0=violated).\n")
+	buf.WriteString("# TYPE lazarus_target_rpo_compliant gauge\n")
+	for _, t := range targets {
+		if t.HasRPOCheck {
+			compVal := 1
+			if t.RPOViolated {
+				compVal = 0
+			}
+			fmt.Fprintf(&buf, "lazarus_target_rpo_compliant{target=%q} %d\n", t.Name, compVal)
+		}
+	}
+
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(buf.Bytes())

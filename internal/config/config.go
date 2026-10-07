@@ -300,9 +300,11 @@ type Check struct {
 	Min        *int64 `yaml:"expect_min"`
 	Max        *int64 `yaml:"expect_max"`
 	Equal        *int64  `yaml:"expect_equal"`
-	ExpectString *string `yaml:"expect_string"`     // exact string match (ideal for checksums / hashes)
-	Pattern      string  `yaml:"expect_pattern"`    // regex that the output must match
-	NotPattern   string  `yaml:"expect_not_pattern"`// regex that the output must NOT match
+	ExpectString *string       `yaml:"expect_string"`     // exact string match (ideal for checksums / hashes)
+	Pattern      string        `yaml:"expect_pattern"`    // regex that the output must match
+	NotPattern   string        `yaml:"expect_not_pattern"`// regex that the output must NOT match
+	MaxRPO       time.Duration `yaml:"max_rpo"`           // maximum acceptable data lag (e.g. "1h", "24h")
+	MaxLag       time.Duration `yaml:"max_lag"`           // alias for max_rpo
 }
 
 const (
@@ -571,17 +573,24 @@ func validateCheck(targetName string, index int, c *Check) error {
 		c.Name = c.SQL
 	}
 
+	if c.MaxRPO == 0 && c.MaxLag > 0 {
+		c.MaxRPO = c.MaxLag
+	}
+
 	expectations := 0
-	for _, set := range []bool{c.Min != nil, c.Max != nil, c.Equal != nil, c.Pattern != "", c.NotPattern != "", c.ExpectString != nil} {
+	for _, set := range []bool{c.Min != nil, c.Max != nil, c.Equal != nil, c.Pattern != "", c.NotPattern != "", c.ExpectString != nil, c.MaxRPO > 0} {
 		if set {
 			expectations++
 		}
 	}
 	if expectations == 0 {
-		return fmt.Errorf("target %q check %q: needs one of expect_min, expect_max, expect_equal, expect_string, expect_pattern or expect_not_pattern", targetName, c.Name)
+		return fmt.Errorf("target %q check %q: needs one of expect_min, expect_max, expect_equal, expect_string, expect_pattern, expect_not_pattern or max_rpo", targetName, c.Name)
 	}
 	if c.ExpectString != nil && expectations > 1 {
 		return fmt.Errorf("target %q check %q: expect_string cannot be combined with other expectations", targetName, c.Name)
+	}
+	if c.MaxRPO > 0 && expectations > 1 {
+		return fmt.Errorf("target %q check %q: max_rpo cannot be combined with other expectations", targetName, c.Name)
 	}
 	if expectations > 1 && (c.Pattern != "" || c.NotPattern != "") && (c.Equal != nil || c.Min != nil || c.Max != nil) {
 		return fmt.Errorf("target %q check %q: pattern expectations cannot be combined with numeric expectations", targetName, c.Name)

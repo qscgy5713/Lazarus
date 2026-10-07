@@ -345,6 +345,8 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 		"BackupSize",
 		"RestoreDurationMs",
 		"TotalDurationMs",
+		"RPOLagSeconds",
+		"RPOViolated",
 		"ChecksTotal",
 		"ChecksPassed",
 		"ChecksFailed",
@@ -356,6 +358,14 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 		if h.Passed {
 			passedStr = "true"
 		}
+		rpoLagStr := "-"
+		rpoViolatedStr := "false"
+		if h.HasRPOCheck {
+			rpoLagStr = fmt.Sprintf("%.1f", h.MaxRPOLagSec)
+			if h.RPOViolated {
+				rpoViolatedStr = "true"
+			}
+		}
 		_ = writer.Write([]string{
 			sanitizeCSVField(h.Target),
 			sanitizeCSVField(strings.Join(h.Tags, "; ")),
@@ -366,6 +376,8 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 			sanitizeCSVField(h.BackupSize),
 			strconv.FormatInt(h.RestoreMs, 10),
 			strconv.FormatInt(h.TotalDuration, 10),
+			rpoLagStr,
+			rpoViolatedStr,
 			strconv.Itoa(h.ChecksTotal),
 			strconv.Itoa(h.ChecksPassed),
 			strconv.Itoa(h.ChecksFailed),

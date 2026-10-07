@@ -208,6 +208,13 @@ targets:
         sql: SELECT md5(string_agg(key || '=' || value, ',' ORDER BY key)) FROM system_configs
         expect_string: "e4d909c290d0fb1ca068ffaddf22cbd0"
 
+      # RPO (Recovery Point Objective) Freshness Assertion:
+      # Verifies the most recent transaction in the backup does not lag beyond SLA limit.
+      # Fails if data lag (time between latest record and drill execution) exceeds max_rpo.
+      - name: latest order timestamp adheres to RPO
+        sql: SELECT max(created_at) FROM orders
+        max_rpo: 1h
+
   - name: production-mysql
     engine: mysql
     path: /backups/mysql/app-latest.sql

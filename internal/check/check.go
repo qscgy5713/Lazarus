@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"lazarus/internal/config"
 	"lazarus/internal/sandbox"
@@ -18,12 +19,15 @@ import (
 
 // Result is the outcome of one check.
 type Result struct {
-	Name   string
-	SQL    string
-	Value  int64
-	Passed bool
-	Reason string // why it failed, empty when passed
-	Err    error  // the query itself failed to run
+	Name         string
+	SQL          string
+	Value        int64
+	Passed       bool
+	Reason       string        // why it failed, empty when passed
+	Err          error         // the query itself failed to run
+	RPOLag       time.Duration // computed data lag if MaxRPO check
+	IsRPOCheck   bool
+	RawTimestamp string
 }
 
 // RunAll executes every check against the sandbox, in order.
@@ -42,6 +46,13 @@ func run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, c confi
 	if err != nil {
 		result.Err = err
 		result.Reason = err.Error()
+		return result
+	}
+
+	if c.MaxRPO > 0 {
+		result.IsRPOCheck = true
+		result.RawTimestamp = strings.TrimSpace(raw)
+		result.Passed, result.RPOLag, result.Reason = EvaluateRPO(raw, c)
 		return result
 	}
 
@@ -204,4 +215,73 @@ func parseScalar(raw string) (int64, error) {
 		return 0, fmt.Errorf("query returned %q, expected a single number", lines[0])
 	}
 	return value, nil
+}
+
+// EvaluateRPO evaluates whether the retrieved timestamp falls within the max allowed RPO lag.
+func EvaluateRPO(raw string, c config.Check) (bool, time.Duration, string) {
+	tRecord, err := ParseTimestamp(raw)
+	if err != nil {
+		return false, 0, fmt.Sprintf("invalid timestamp for RPO check: %v", err)
+	}
+	now := time.Now().UTC()
+	var lag time.Duration
+	if now.After(tRecord) {
+		lag = now.Sub(tRecord)
+	} else {
+		lag = 0
+	}
+	if lag > c.MaxRPO {
+		return false, lag, fmt.Sprintf("RPO exceeded: latest record timestamp %s is %s ago, exceeds max_rpo %s",
+			tRecord.Format("2006-01-02 15:04:05"), lag.Round(time.Second), c.MaxRPO)
+	}
+	return true, lag, ""
+}
+
+// ParseTimestamp parses a timestamp string from various standard formats or epoch values.
+func ParseTimestamp(raw string) (time.Time, error) {
+	cleaned := strings.TrimSpace(raw)
+	cleaned = strings.Trim(cleaned, `"'`)
+	cleaned = strings.TrimSpace(cleaned)
+	if cleaned == "" {
+		return time.Time{}, fmt.Errorf("empty timestamp string")
+	}
+
+	// 1. Check if it's a numeric Unix epoch
+	if val, err := strconv.ParseInt(cleaned, 10, 64); err == nil {
+		if val > 100000000000 { // milliseconds
+			return time.UnixMilli(val).UTC(), nil
+		}
+		return time.Unix(val, 0).UTC(), nil
+	}
+
+	// 2. Common SQL and ISO time formats
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05.999999-07:00",
+		"2006-01-02 15:04:05.999999",
+		"2006-01-02 15:04:05-07:00",
+		"2006-01-02 15:04:05-07",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+		time.ANSIC,
+		time.UnixDate,
+		time.RubyDate,
+		time.RFC822,
+		time.RFC822Z,
+	}
+
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, cleaned); err == nil {
+			return t.UTC(), nil
+		}
+		if t, err := time.ParseInLocation(layout, cleaned, time.Local); err == nil {
+			return t.UTC(), nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("unrecognized timestamp %q (expected ISO8601, RFC3339, YYYY-MM-DD HH:MM:SS, or Unix epoch)", cleaned)
 }

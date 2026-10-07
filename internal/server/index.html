@@ -765,7 +765,10 @@
           : '';
 
         const checksHtml = (t.last_checks || []).map(ch => {
-          const detail = ch.passed ? '✓ OK (= ' + escapeHtml(ch.value) + ')' : '✗ ' + escapeHtml(ch.reason || 'FAILED');
+          let detail = ch.passed ? '✓ OK (= ' + escapeHtml(ch.value) + ')' : '✗ ' + escapeHtml(ch.reason || 'FAILED');
+          if (ch.is_rpo_check) {
+            detail = ch.passed ? '✓ OK (' + formatDurationSec(ch.rpo_lag_seconds) + ' lag)' : '✗ ' + escapeHtml(ch.reason || 'RPO EXCEEDED');
+          }
           const color = ch.passed ? 'text-emerald-400' : 'text-rose-400';
           return '<div class="flex items-center justify-between py-1 border-b border-slate-800/40 text-[11px]"><span class="text-slate-300">' + escapeHtml(ch.name) + '</span><span class="font-mono ' + color + '">' + detail + '</span></div>';
         }).join('');
@@ -801,6 +804,14 @@
               '<span class="text-slate-500 block text-[10px] uppercase font-semibold">Backup Size</span>' +
               '<span class="font-mono text-slate-200">' + (t.last_backup_size ? escapeHtml(t.last_backup_size) : 'N/A') + '</span>' +
             '</div>' +
+            (t.has_rpo_check ? (
+              '<div class="col-span-2 flex justify-between items-center text-[11px] pt-1 border-t border-slate-800/50">' +
+                '<span class="text-slate-400">⏱️ RPO Data Freshness:</span>' +
+                '<span class="font-mono font-semibold ' + (t.rpo_violated ? 'text-rose-400' : 'text-emerald-400') + '">' +
+                  (t.rpo_violated ? '⚠️ Violated (' + formatDurationSec(t.max_rpo_lag_seconds) + ' lag)' : '✓ Compliant (' + formatDurationSec(t.max_rpo_lag_seconds) + ' lag)') +
+                '</span>' +
+              '</div>'
+            ) : '') +
             (t.peak_memory_bytes || t.disk_footprint_bytes ? (
               '<div class="col-span-2 flex justify-between items-center text-[11px] pt-1 border-t border-slate-800/50">' +
                 '<span class="text-slate-400">📊 Sandbox: RAM Peak <strong class="text-slate-200 font-mono">' + (t.peak_memory_bytes ? formatBytes(t.peak_memory_bytes) : 'N/A') + '</strong> &bull; Disk <strong class="text-slate-200 font-mono">' + (t.disk_footprint_bytes ? formatBytes(t.disk_footprint_bytes) : 'N/A') + '</strong></span>' +
@@ -927,6 +938,11 @@
       if (target.remediation && target.remediation.triggered) {
         const remStatus = target.remediation.success ? 'SUCCESS' : 'FAILED';
         addLog('REMEDY', `Automated Incident Remediation Playbook: "${target.remediation.command}" -> ${remStatus} (${target.remediation.duration_ms}ms)`, target.remediation.success ? 'text-emerald-300' : 'text-rose-400 font-bold');
+      }
+      if (target.has_rpo_check) {
+        const rpoStatus = target.rpo_violated ? 'VIOLATED' : 'COMPLIANT';
+        const lagStr = formatDurationSec(target.max_rpo_lag_seconds);
+        addLog('RPO', `Data Freshness Verification -> Latest Record Lag: ${lagStr} (Status: ${rpoStatus})`, target.rpo_violated ? 'text-rose-400 font-bold' : 'text-emerald-300 font-semibold');
       }
 
       addLog('TEARDOWN', 'Destroying ephemeral sandbox database container and reclaiming resources...');
@@ -1156,6 +1172,14 @@
       const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
       const i = Math.floor(Math.log(bytes) / Math.log(k));
       return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function formatDurationSec(sec) {
+      if (!sec || sec <= 0) return '0s';
+      sec = Math.round(sec);
+      if (sec < 60) return sec + 's';
+      if (sec < 3600) return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
+      return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
     }
 
     initTheme();
