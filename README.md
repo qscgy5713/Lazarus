@@ -125,6 +125,9 @@ FAIL  production-mysql [checks] check "customers table is populated" failed: got
 | `--config` | `lazarus.yml` | 設定檔路徑 |
 | `--target` | (全部) | 只驗證指定的一個目標 |
 | `--tag` | (全部) | 只驗證符合特定標籤（如 `prod`、`aws`、`staging`）的目標 |
+| `--chaos` | `false` | 備份混沌工程演練模式：刻意損壞第一份備份，檢驗 Fallback 回退救援與告警自癒抗受性 |
+| `--live` | `true` | 在互動式終端機即時呈現多目標並行進度列（非 TTY 或 `--json`/`--quiet` 時自動停用） |
+| `--output-html` | (無) | 產出自包含且可離線/列印的正式 DR 災難復原審計 HTML 報告路徑 |
 | `--daemon` | `false` | 以常駐守護進程模式持續定期輪詢演練（免手動設定 crontab） |
 | `--interval` | (目標設定) | 守護進程演練間隔（如 `1h`、`30m`，覆蓋個別目標設定） |
 | `--json` | `false` | 機器可讀的輸出，給 CI/腳本用 |
@@ -624,6 +627,44 @@ checks:
 ```bash
 ./lazarus init lazarus.yml
 ```
+
+### 10. 備份混沌工程演練模式 (Backup Chaos & Mutation Testing: `--chaos`)
+
+真正的災難復原演練不僅要驗證「備份完好時能跑通」，更要驗證「當主要備份檔損壞、被勒索軟體局部加密或網路傳輸損毀時，系統的 Fallback 回退救援機制與告警自癒是否真的能成功自救」：
+- 在演練沙盒還原前，自動在暫存副本上故意注入 Byte Corruption（翻轉字節），絕不更動原始備份檔案。
+- 驗證還原失敗是否被準確攔截，並驗證 Fallback 是否自動成功切換至前一份歷史備份救回資料。
+- 演練報告中會自動標記 `🧪 Chaos Resilience Verified: PASS (RPO: X hours)`。
+
+```bash
+# 命令列一鍵對所有啟用 fallback 的目標啟動混沌測試
+./lazarus --config lazarus.yml --chaos
+```
+
+### 11. 獨立 DR 審計 HTML 報告產出 (`--output-html` / `lazarus export`)
+
+面對 SOC 2、ISO 27001、HIPAA 或內部資訊安全稽核時，一鍵匯出排版現代、深色/淺色自適應、可離線開啟且支援 `@media print` 轉存 PDF 的正式 DR 審計報告：
+- 涵蓋所有 Target 的備份指紋、還原耗時、各項 SQL 斷言、結構漂移比對與 RPO 分析。
+
+```bash
+# 執行演練時同步產生正式 HTML 審計報告
+./lazarus --config lazarus.yml --output-html dr-report.html
+
+# 或從現有狀態一鍵導出報告
+./lazarus export --config lazarus.yml --output dr-report.html --format html
+```
+
+### 12. 多目標並行即時動態終端介面 (Live Terminal Multi-Target Progress: `--live`)
+
+在平行驗證多個目標時（如 `--parallel 4`），終端機會以 ANSI 原生動態狀態列即時呈現各資料庫的當前階段：
+`[fetch]` ➔ `[sandbox]` ➔ `[restore]` ➔ `[schema]` ➔ `[checks]` ➔ `[done]`：
+- 清楚展示當前各目標耗時與進度百分比；非 TTY 或 `--json`/`--quiet` 時自動安全降級為一般日誌。
+
+### 13. Control Plane 30 天歷史 SLA / MTTR 純 SVG 趨勢圖
+
+Control Plane 儀表板內建零外部相依性之原生純 SVG 圖表與 Target 歷史彈窗：
+- **30-Day Drill Activity**：每日成功（綠色）與失敗（紅色）演練量堆疊柱狀圖，滑鼠懸停顯示當日詳情。
+- **MTTR Performance Trend**：過去 30 天平均還原時間（Mean Time to Restore）走勢折線與漸層面積圖。
+- **Target History Modal**：點擊任何資料庫卡片的 `History` 按鈕，即可查看最近 20 次演練的詳細歷程與耗時。
 
 ## 排進 cron
 

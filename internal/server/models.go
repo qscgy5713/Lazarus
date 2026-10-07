@@ -104,3 +104,13 @@ type Summary struct {
 	TotalDrills30d  int     `json:"total_drills_30d"`  // Total drills in the last 30 days
 	PassedDrills30d int     `json:"passed_drills_30d"` // Successful drills in the last 30 days
 }
+
+// DailyMetric aggregates verification drill volume, pass rate, and MTTR for a single calendar day.
+type DailyMetric struct {
+	Date         string  `json:"date"` // YYYY-MM-DD
+	TotalDrills  int     `json:"total_drills"`
+	PassedDrills int     `json:"passed_drills"`
+	FailedDrills int     `json:"failed_drills"`
+	AvgRestoreMs int64   `json:"avg_restore_ms"`
+	SuccessRate  float64 `json:"success_rate"`
+}

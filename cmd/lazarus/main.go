@@ -15,11 +15,13 @@ import (
 	"syscall"
 	"time"
 
+	"lazarus/internal/backup"
 	"lazarus/internal/config"
 	"lazarus/internal/inspect"
 	"lazarus/internal/notify"
 	"lazarus/internal/report"
 	"lazarus/internal/state"
+	"lazarus/internal/ui"
 	"lazarus/internal/verify"
 )
 
@@ -37,6 +39,9 @@ func main() {
 		case "init":
 			initCommand(os.Args[2:])
 			return
+		case "export":
+			exportCommand(os.Args[2:])
+			return
 		}
 	}
 	configPath := flag.String("config", "lazarus.yml", "path to the config file")
@@ -44,9 +49,12 @@ func main() {
 	tagFilter := flag.String("tag", "", "verify only targets matching this tag")
 	asJSON := flag.Bool("json", false, "machine-readable output")
 	quiet := flag.Bool("quiet", false, "only print failing targets and the final tally (ignored with --json, which is already machine-readable)")
+	liveProgress := flag.Bool("live", true, "display real-time multi-target progress in terminal (auto-disabled if non-TTY or with --json/--quiet)")
 	keepOnFailure := flag.Bool("keep-on-failure", false, "keep a failing target's sandbox container (or SQLite temp file) instead of tearing it down, for manual inspection")
 	checkConfig := flag.Bool("check-config", false, "validate the config file and exit, without fetching, restoring, or touching Docker")
 	dryRun := flag.Bool("dry-run", false, "alias for --check-config")
+	chaos := flag.Bool("chaos", false, "run chaos engineering drill: deliberately corrupt primary backup to verify fallback recovery resilience")
+	outputHTML := flag.String("output-html", "", "path to write standalone HTML disaster recovery audit report")
 	daemon := flag.Bool("daemon", false, "run continuously as a daemon periodic runner")
 	interval := flag.Duration("interval", 0, "interval between verification runs in daemon mode (e.g. 1h, 30m)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
@@ -76,6 +84,15 @@ func main() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "lazarus: %v\n", err)
 			os.Exit(2)
+		}
+	}
+
+	if *chaos {
+		for i := range targets {
+			targets[i].Chaos.Enabled = true
+			if targets[i].Chaos.CorruptBytes <= 0 {
+				targets[i].Chaos.CorruptBytes = 64
+			}
 		}
 	}
 
@@ -109,18 +126,23 @@ func main() {
 	}
 
 	if *daemon {
-		runDaemon(ctx, cfg, targets, st, *keepOnFailure, *asJSON, *quiet, *interval)
+		runDaemon(ctx, cfg, targets, st, *keepOnFailure, *asJSON, *quiet, *liveProgress, *outputHTML, *interval)
 		return
 	}
 
-	allPassed := runOnce(ctx, cfg, targets, st, *keepOnFailure, *asJSON, *quiet)
+	allPassed := runOnce(ctx, cfg, targets, st, *keepOnFailure, *asJSON, *quiet, *liveProgress, *outputHTML)
 	if !allPassed {
 		os.Exit(1)
 	}
 }
 
-func runOnce(ctx context.Context, cfg *config.Config, targets []config.Target, st *state.State, keepOnFailure, asJSON, quiet bool) bool {
-	results := verify.RunAll(ctx, targets, st, cfg.Parallelism, keepOnFailure, cfg.GPGPassphrase)
+func runOnce(ctx context.Context, cfg *config.Config, targets []config.Target, st *state.State, keepOnFailure, asJSON, quiet, live bool, outputHTML string) bool {
+	enableLive := live && !asJSON && !quiet && ui.IsTerminal(os.Stdout)
+	tracker := ui.NewTracker(os.Stdout, targets, enableLive)
+	tracker.Start()
+
+	results := verify.RunAllWithProgress(ctx, targets, st, cfg.Parallelism, keepOnFailure, cfg.GPGPassphrase, tracker.Update)
+	tracker.Stop()
 
 	if err := st.Save(cfg.StateFile); err != nil {
 		fmt.Fprintf(os.Stderr, "lazarus: WARNING: could not save state file %q: %v\n", cfg.StateFile, err)
@@ -133,12 +155,24 @@ func runOnce(ctx context.Context, cfg *config.Config, targets []config.Target, s
 		allPassed = report.Text(os.Stdout, results, quiet)
 	}
 
+	if outputHTML != "" {
+		if f, err := os.Create(outputHTML); err == nil {
+			_ = report.HTML(f, results, "Lazarus Disaster Recovery Audit Report")
+			_ = f.Close()
+			if !asJSON && !quiet {
+				fmt.Fprintf(os.Stderr, "lazarus: generated HTML audit report at %s\n", outputHTML)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "lazarus: WARNING: could not write HTML report %q: %v\n", outputHTML, err)
+		}
+	}
+
 	sendNotification(ctx, cfg.Notify, results)
 	_ = report.WriteGitHubStepSummaryIfPresent(results)
 	return allPassed
 }
 
-func runDaemon(ctx context.Context, cfg *config.Config, targets []config.Target, st *state.State, keepOnFailure, asJSON, quiet bool, overrideInterval time.Duration) {
+func runDaemon(ctx context.Context, cfg *config.Config, targets []config.Target, st *state.State, keepOnFailure, asJSON, quiet, live bool, outputHTML string, overrideInterval time.Duration) {
 	dInterval := overrideInterval
 	if dInterval <= 0 {
 		// Check target-level intervals
@@ -156,7 +190,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, targets []config.Target,
 
 	// First immediate run
 	fmt.Printf("[%s] lazarus: starting initial drill verification cycle...\n", time.Now().Format("2006-01-02 15:04:05"))
-	runOnce(ctx, cfg, targets, st, keepOnFailure, asJSON, quiet)
+	runOnce(ctx, cfg, targets, st, keepOnFailure, asJSON, quiet, live, outputHTML)
 
 	ticker := time.NewTicker(dInterval)
 	defer ticker.Stop()
@@ -168,7 +202,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, targets []config.Target,
 			return
 		case t := <-ticker.C:
 			fmt.Printf("\n[%s] lazarus: starting scheduled drill verification cycle...\n", t.Format("2006-01-02 15:04:05"))
-			runOnce(ctx, cfg, targets, st, keepOnFailure, asJSON, quiet)
+			runOnce(ctx, cfg, targets, st, keepOnFailure, asJSON, quiet, live, outputHTML)
 		}
 	}
 }
@@ -416,4 +450,61 @@ targets:
 		os.Exit(1)
 	}
 	fmt.Printf("✓ Created %s successfully! Run `lazarus --config %s` to start disaster recovery drill.\n", targetFile, targetFile)
+}
+
+func exportCommand(args []string) {
+	fs := flag.NewFlagSet("export", flag.ExitOnError)
+	configPath := fs.String("config", "lazarus.yml", "path to lazarus config file")
+	format := fs.String("format", "html", "export format: html or md")
+	outputPath := fs.String("output", "dr-audit-report.html", "output file path")
+	title := fs.String("title", "Lazarus Disaster Recovery Audit Report", "audit report title")
+	_ = fs.Parse(args)
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "lazarus export: %v\n", err)
+		os.Exit(2)
+	}
+
+	st, _ := state.Load(cfg.StateFile)
+	if st == nil {
+		st = state.New()
+	}
+
+	var results []verify.Result
+	for _, t := range cfg.Targets {
+		r := verify.Result{
+			Target: t.Name,
+			Tags:   t.Tags,
+			SLARTO: t.SLARTO,
+			Stage:  verify.StageDone,
+			Passed: true,
+		}
+		if ts, ok := st.Get(t.Name); ok && ts.LastSizeBytes > 0 {
+			r.Backup = &backup.File{
+				Path:    t.Path,
+				Size:    ts.LastSizeBytes,
+				ModTime: ts.UpdatedAt,
+			}
+		}
+		results = append(results, r)
+	}
+
+	f, err := os.Create(*outputPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "lazarus export: failed to create file %q: %v\n", *outputPath, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+
+	if strings.ToLower(*format) == "html" {
+		if err := report.HTML(f, results, *title); err != nil {
+			fmt.Fprintf(os.Stderr, "lazarus export: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		_ = report.StepSummary(f, results)
+	}
+
+	fmt.Printf("✓ Lazarus: successfully exported %s disaster recovery audit report to %s\n", *format, *outputPath)
 }

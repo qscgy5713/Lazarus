@@ -296,6 +296,79 @@ func (s *Store) GetAuditHistory(targetFilter, statusFilter, tagFilter string, li
 	return all
 }
 
+func (s *Store) GetDailyMetrics(days int) []DailyMetric {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if days <= 0 {
+		days = 30
+	}
+
+	type dayBucket struct {
+		total     int
+		passed    int
+		failed    int
+		restoreMs int64
+		restoreN  int64
+	}
+
+	buckets := make(map[string]*dayBucket)
+	now := time.Now().UTC()
+
+	dateKeys := make([]string, days)
+	for i := days - 1; i >= 0; i-- {
+		t := now.AddDate(0, 0, -i)
+		dateStr := t.Format("2006-01-02")
+		dateKeys[days-1-i] = dateStr
+		buckets[dateStr] = &dayBucket{}
+	}
+
+	cutoff := now.AddDate(0, 0, -days)
+	for _, rec := range s.targets {
+		for _, h := range rec.RecentHistory {
+			hTime := h.DrilledAt.UTC()
+			if hTime.After(cutoff) {
+				dateStr := hTime.Format("2006-01-02")
+				if b, ok := buckets[dateStr]; ok {
+					b.total++
+					if h.Passed {
+						b.passed++
+					} else {
+						b.failed++
+					}
+					if h.RestoreMs > 0 {
+						b.restoreMs += h.RestoreMs
+						b.restoreN++
+					}
+				}
+			}
+		}
+	}
+
+	metrics := make([]DailyMetric, len(dateKeys))
+	for i, dateStr := range dateKeys {
+		b := buckets[dateStr]
+		var avgRestore int64
+		if b.restoreN > 0 {
+			avgRestore = b.restoreMs / b.restoreN
+		}
+		var rate float64
+		if b.total > 0 {
+			rate = float64(b.passed) / float64(b.total) * 100.0
+		}
+		metrics[i] = DailyMetric{
+			Date:         dateStr,
+			TotalDrills:  b.total,
+			PassedDrills: b.passed,
+			FailedDrills: b.failed,
+			AvgRestoreMs: avgRestore,
+			SuccessRate:  rate,
+		}
+	}
+
+	return metrics
+}
+
 func (s *Store) GetRecentReports() []InboundReport {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -147,6 +147,13 @@ targets:
     fallback_on_failure: true
     max_fallback_depth: 3
 
+    # Chaos Engineering Drill:
+    # Deliberately injects byte corruption into the primary backup on a disposable copy
+    # to test whether fallback disaster recovery and alerting automatically rescue the system.
+    # chaos:
+    #   enabled: false
+    #   corrupt_bytes: 64
+
     # Automated Schema & Table Drift Inspection:
     # Introspects table counts and verifies expected tables exist after restore.
     auto_schema_check: true

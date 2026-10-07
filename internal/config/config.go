@@ -220,7 +220,17 @@ type Target struct {
 	// HooksTimeout limits execution duration of pre/post drill hooks (default: 5m).
 	HooksTimeout time.Duration `yaml:"hooks_timeout"`
 
+	// Chaos deliberately corrupts the primary backup archive to test if
+	// FallbackOnFailure and alerting mechanisms correctly rescue the drill.
+	Chaos ChaosConfig `yaml:"chaos"`
+
 	Checks []Check `yaml:"checks"`
+}
+
+// ChaosConfig controls deliberate backup corruption testing to verify fallback resilience.
+type ChaosConfig struct {
+	Enabled      bool `yaml:"enabled"`
+	CorruptBytes int  `yaml:"corrupt_bytes"`
 }
 
 // GCSConfig configures fetching a backup from Google Cloud Storage.
@@ -445,6 +455,9 @@ func (c *Config) applyDefaultsAndValidate() error {
 
 		if t.FallbackOnFailure && t.MaxFallbackDepth <= 0 {
 			t.MaxFallbackDepth = 3
+		}
+		if t.Chaos.Enabled && t.Chaos.CorruptBytes <= 0 {
+			t.Chaos.CorruptBytes = 64
 		}
 		if (t.PreDrillCommand != "" || t.PostDrillCommand != "") && t.HooksTimeout <= 0 {
 			t.HooksTimeout = 5 * time.Minute

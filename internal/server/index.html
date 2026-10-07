@@ -131,6 +131,44 @@
       </div>
     </section>
 
+    <!-- 30-Day Reliability & Restoration Trends -->
+    <section class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div class="bg-slate-900/70 border border-slate-800 rounded-xl p-5 shadow-sm space-y-3">
+        <div class="flex items-center justify-between">
+          <div>
+            <h3 class="text-sm font-bold text-white tracking-tight flex items-center space-x-2">
+              <span>📊</span>
+              <span>30-Day Drill Activity</span>
+            </h3>
+            <p class="text-xs text-slate-400">Daily verification drill volume &amp; pass/fail breakdown</p>
+          </div>
+          <div class="flex items-center space-x-3 text-[11px] font-mono text-slate-400">
+            <span class="flex items-center space-x-1"><span class="w-2 h-2 rounded bg-emerald-500 inline-block"></span><span>Pass</span></span>
+            <span class="flex items-center space-x-1"><span class="w-2 h-2 rounded bg-rose-500 inline-block"></span><span>Fail</span></span>
+          </div>
+        </div>
+        <div id="dailyActivityChartContainer" class="w-full h-32 flex items-center justify-center bg-slate-950/60 rounded-lg border border-slate-800/80 p-2">
+          <!-- Rendered dynamically -->
+        </div>
+      </div>
+
+      <div class="bg-slate-900/70 border border-slate-800 rounded-xl p-5 shadow-sm space-y-3">
+        <div class="flex items-center justify-between">
+          <div>
+            <h3 class="text-sm font-bold text-white tracking-tight flex items-center space-x-2">
+              <span>📈</span>
+              <span>MTTR Performance Trend</span>
+            </h3>
+            <p class="text-xs text-slate-400">30-day average restore time trajectory (Mean Time to Restore)</p>
+          </div>
+          <span id="chartMTTRCurrent" class="text-xs font-mono font-bold text-indigo-400">-</span>
+        </div>
+        <div id="dailyMTTRChartContainer" class="w-full h-32 flex items-center justify-center bg-slate-950/60 rounded-lg border border-slate-800/80 p-2">
+          <!-- Rendered dynamically -->
+        </div>
+      </div>
+    </section>
+
     <!-- Tracked Databases Matrix -->
     <section class="space-y-4">
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -261,6 +299,22 @@
     </div>
   </div>
 
+  <!-- Target Drill History Modal -->
+  <div id="historyModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full p-6 shadow-2xl space-y-4 max-h-[85vh] flex flex-col">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div>
+          <h3 id="historyModalTitle" class="font-bold text-lg text-white font-mono">Target Drill History</h3>
+          <p class="text-xs text-slate-400">Past recovery drills and validation stages</p>
+        </div>
+        <button onclick="closeTargetHistoryModal()" class="text-slate-400 hover:text-white text-xl font-bold p-1">&times;</button>
+      </div>
+      <div id="historyModalList" class="space-y-3 overflow-y-auto flex-1 pr-1">
+        <!-- Rendered dynamically -->
+      </div>
+    </div>
+  </div>
+
   <script>
     let globalTargets = [];
     let currentTag = '';
@@ -281,17 +335,20 @@
       const icon = document.getElementById('refreshIcon');
       if (icon) icon.classList.add('animate-spin');
       try {
-        const [sumRes, tgtRes, repRes] = await Promise.all([
+        const [sumRes, tgtRes, repRes, dailyRes] = await Promise.all([
           fetch('/api/v1/summary'),
           fetch('/api/v1/targets'),
-          fetch('/api/v1/reports')
+          fetch('/api/v1/reports'),
+          fetch('/api/v1/metrics/daily?days=30')
         ]);
         const summary = await sumRes.json();
         const targets = await tgtRes.json();
         const reports = await repRes.json();
+        const dailyMetrics = await dailyRes.json();
 
         globalTargets = targets;
         renderSummary(summary);
+        renderDailyCharts(dailyMetrics);
         renderTagFilterBar();
         applyTargetFilter();
         renderReports(reports);
@@ -299,6 +356,85 @@
         console.error('Failed to load data:', err);
       } finally {
         if (icon) icon.classList.remove('animate-spin');
+      }
+    }
+
+    function renderDailyCharts(metrics) {
+      if (!metrics || metrics.length === 0) return;
+
+      // 1. Daily Activity Bar Chart
+      const actCont = document.getElementById('dailyActivityChartContainer');
+      if (actCont) {
+        const w = 500, h = 90, pad = 8;
+        const maxTotal = Math.max(...metrics.map(m => m.total_drills), 1);
+        const barWidth = 10;
+        const gap = (w - pad * 2 - (metrics.length * barWidth)) / (metrics.length - 1);
+
+        let bars = '';
+        metrics.forEach((m, idx) => {
+          const x = pad + idx * (barWidth + gap);
+          const totalH = (m.total_drills / maxTotal) * (h - pad * 2);
+          const passedH = m.total_drills > 0 ? (m.passed_drills / m.total_drills) * totalH : 0;
+          const failedH = totalH - passedH;
+
+          const baseTooltip = `${m.date}: ${m.total_drills} drills (${m.passed_drills} passed, ${m.failed_drills} failed)`;
+
+          if (m.total_drills === 0) {
+            bars += `<rect x="${x.toFixed(1)}" y="${h - pad - 4}" width="${barWidth}" height="4" rx="2" fill="#334155" opacity="0.3"><title>${m.date}: No drills</title></rect>`;
+          } else {
+            const passY = h - pad - passedH;
+            if (passedH > 0) {
+              bars += `<rect x="${x.toFixed(1)}" y="${passY.toFixed(1)}" width="${barWidth}" height="${passedH.toFixed(1)}" rx="1.5" fill="#10b981"><title>${baseTooltip}</title></rect>`;
+            }
+            if (failedH > 0) {
+              const failY = passY - failedH;
+              bars += `<rect x="${x.toFixed(1)}" y="${failY.toFixed(1)}" width="${barWidth}" height="${failedH.toFixed(1)}" rx="1.5" fill="#f43f5e"><title>${baseTooltip}</title></rect>`;
+            }
+          }
+        });
+
+        actCont.innerHTML = `<svg viewBox="0 0 ${w} ${h}" class="w-full h-full overflow-visible">${bars}</svg>`;
+      }
+
+      // 2. MTTR Performance Trend (Line & Area)
+      const mttrCont = document.getElementById('dailyMTTRChartContainer');
+      if (mttrCont) {
+        const w = 500, h = 90, pad = 10;
+        const restores = metrics.map(m => m.avg_restore_ms);
+        const maxVal = Math.max(...restores, 1000);
+        const step = (w - pad * 2) / (metrics.length - 1);
+
+        const pts = metrics.map((m, idx) => {
+          const x = pad + idx * step;
+          const y = h - pad - (m.avg_restore_ms / maxVal) * (h - pad * 2);
+          return { x: x.toFixed(1), y: y.toFixed(1), val: m.avg_restore_ms, date: m.date };
+        });
+
+        const linePts = pts.map(p => `${p.x},${p.y}`).join(' ');
+        const areaPts = `${pts[0].x},${h - pad} ` + linePts + ` ${pts[pts.length - 1].x},${h - pad}`;
+
+        const dots = pts.filter(p => p.val > 0).map(p => {
+          return `<circle cx="${p.x}" cy="${p.y}" r="2.5" fill="#818cf8" stroke="#0f172a" stroke-width="1"><title>${p.date}: ${(p.val / 1000).toFixed(2)}s avg restore</title></circle>`;
+        }).join('');
+
+        const validRestores = restores.filter(r => r > 0);
+        const currentAvg = validRestores.length > 0 ? (validRestores[validRestores.length - 1] / 1000).toFixed(2) + 's' : 'N/A';
+        const lbl = document.getElementById('chartMTTRCurrent');
+        if (lbl) lbl.innerText = `Latest: ${currentAvg}`;
+
+        mttrCont.innerHTML = `
+          <svg viewBox="0 0 ${w} ${h}" class="w-full h-full overflow-visible">
+            <defs>
+              <linearGradient id="mttrGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#6366f1" stop-opacity="0.3" />
+                <stop offset="100%" stop-color="#6366f1" stop-opacity="0.0" />
+              </linearGradient>
+            </defs>
+            <polygon points="${areaPts}" fill="url(#mttrGrad)" />
+            <polyline fill="none" stroke="#6366f1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" points="${linePts}" />
+            ${dots}
+          </svg>
+        `;
       }
     }
 
@@ -495,6 +631,7 @@
           : `<button onclick="triggerDrill(this.getAttribute('data-target'))" data-target="${safeName}" class="text-[11px] px-2 py-0.5 rounded bg-indigo-900/60 hover:bg-indigo-800 text-indigo-300 border border-indigo-700/60 transition flex items-center space-x-1"><span>⚡</span><span>Run Drill</span></button>`;
 
         const logsBtn = `<button onclick="openTerminalDrawer(this.getAttribute('data-target'))" data-target="${safeName}" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition flex items-center space-x-1"><span>📋</span><span>Logs</span></button>`;
+        const historyBtn = `<button onclick="openTargetHistoryModal(this.getAttribute('data-target'))" data-target="${safeName}" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition flex items-center space-x-1"><span>📜</span><span>History</span></button>`;
 
         const tagsHtml = (t.tags && t.tags.length > 0)
           ? '<div class="flex flex-wrap gap-1 mt-1">' +
@@ -518,6 +655,7 @@
               '<div class="flex items-center space-x-2 flex-wrap gap-y-1">' +
                 '<h3 class="text-base font-bold text-white tracking-tight">' + safeName + '</h3>' +
                 logsBtn +
+                historyBtn +
                 triggerBtn +
                 muteBtn +
               '</div>' +
@@ -718,11 +856,62 @@
       document.getElementById('certModal').classList.add('hidden');
     }
 
+    function openTargetHistoryModal(name) {
+      if (!name) return;
+      const target = (globalTargets || []).find(t => t.name === name);
+      if (!target) return;
+
+      document.getElementById('historyModalTitle').innerText = `${target.name} — Drill History`;
+      const list = document.getElementById('historyModalList');
+      const history = target.recent_history || [];
+
+      if (history.length === 0) {
+        list.innerHTML = '<div class="py-8 text-center text-slate-500 text-xs">No historical drills recorded for this target yet.</div>';
+      } else {
+        const sorted = [...history].sort((a, b) => new Date(b.drilled_at) - new Date(a.drilled_at));
+        list.innerHTML = sorted.map(h => {
+          const statusBg = h.passed ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20';
+          const statusIcon = h.passed ? '✓ PASS' : '✗ FAIL';
+          const timeStr = h.drilled_at ? new Date(h.drilled_at).toLocaleString() : 'N/A';
+          const restoreSec = h.restore_ms ? (h.restore_ms / 1000).toFixed(2) + 's' : 'N/A';
+          const totalSec = h.total_duration_ms ? (h.total_duration_ms / 1000).toFixed(2) + 's' : 'N/A';
+          const checksStr = h.checks_total > 0 ? `${h.checks_passed}/${h.checks_total} checks passed` : 'no checks';
+
+          let errHtml = '';
+          if (h.error) {
+            errHtml = `<div class="mt-2 text-xs font-mono text-rose-300 bg-rose-950/40 p-2 rounded border border-rose-900/40 truncate" title="${escapeHtml(h.error)}">Error: ${escapeHtml(h.error)}</div>`;
+          }
+
+          return `
+            <div class="p-3 bg-slate-950/70 border border-slate-800 rounded-xl space-y-1.5 hover:border-slate-700 transition text-xs">
+              <div class="flex items-center justify-between">
+                <span class="font-mono text-slate-300 font-bold">${timeStr}</span>
+                <span class="px-2 py-0.5 rounded text-[10px] font-bold border ${statusBg}">${statusIcon}</span>
+              </div>
+              <div class="grid grid-cols-3 gap-2 text-[11px] text-slate-400 font-mono pt-1">
+                <div>Restore: <span class="text-slate-200 font-semibold">${restoreSec}</span></div>
+                <div>Total: <span class="text-slate-200">${totalSec}</span></div>
+                <div>Checks: <span class="text-slate-200">${checksStr}</span></div>
+              </div>
+              ${errHtml}
+            </div>
+          `;
+        }).join('');
+      }
+
+      document.getElementById('historyModal').classList.remove('hidden');
+    }
+
+    function closeTargetHistoryModal() {
+      document.getElementById('historyModal').classList.add('hidden');
+    }
+
     // Keyboard ESC listener
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         closeTerminalDrawer();
         closeCertificateModal();
+        closeTargetHistoryModal();
       }
     });
 

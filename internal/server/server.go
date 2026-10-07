@@ -126,6 +126,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/targets/{name}/trigger", s.handleTriggerTarget)
 	s.mux.HandleFunc("GET /api/v1/reports", s.handleGetReports)
 	s.mux.HandleFunc("GET /api/v1/summary", s.handleGetSummary)
+	s.mux.HandleFunc("GET /api/v1/metrics/daily", s.handleGetDailyMetrics)
 	s.mux.HandleFunc("GET /api/v1/export/csv", s.handleExportCSV)
 	s.mux.HandleFunc("GET /api/v1/export/certificate.pdf", s.handleExportPDF)
 	s.mux.HandleFunc("GET /api/v1/stream", s.handleStream)
@@ -240,6 +241,22 @@ func (s *Server) handleGetSummary(w http.ResponseWriter, r *http.Request) {
 	summary := s.store.GetSummary()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(summary)
+}
+
+func (s *Server) handleGetDailyMetrics(w http.ResponseWriter, r *http.Request) {
+	if !s.checkAuth(r) {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	days := 30
+	if dStr := r.URL.Query().Get("days"); dStr != "" {
+		if d, err := strconv.Atoi(dStr); err == nil && d > 0 {
+			days = d
+		}
+	}
+	metrics := s.store.GetDailyMetrics(days)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(metrics)
 }
 
 func (s *Server) handleMuteTarget(w http.ResponseWriter, r *http.Request) {

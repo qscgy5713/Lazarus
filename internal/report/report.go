@@ -51,6 +51,16 @@ func Text(w io.Writer, results []verify.Result, quiet bool) bool {
 		if r.RestoreDuration > 0 {
 			fmt.Fprintf(w, "      restore took: %s\n", r.RestoreDuration.Round(time.Millisecond))
 		}
+		if r.FallbackUsed {
+			fmt.Fprintf(w, "      fallback: %s\n", r.FallbackMessage)
+		}
+		if r.ChaosInjected {
+			if r.ChaosPassed {
+				fmt.Fprintf(w, "      chaos drill: PASS (%s)\n", r.ChaosMessage)
+			} else {
+				fmt.Fprintf(w, "      chaos drill: FAILED (%s)\n", r.ChaosMessage)
+			}
+		}
 		if r.SchemaDrift != nil {
 			fmt.Fprintf(w, "      schema: %d tables verified\n", r.SchemaDrift.TotalTables)
 			if len(r.SchemaDrift.MissingTables) > 0 {
@@ -98,6 +108,9 @@ type jsonResult struct {
 	FallbackBackup      string      `json:"fallback_backup,omitempty"`
 	FallbackRPOSec      float64     `json:"fallback_rpo_seconds,omitempty"`
 	FallbackMessage     string      `json:"fallback_message,omitempty"`
+	ChaosInjected       bool        `json:"chaos_injected,omitempty"`
+	ChaosPassed         bool        `json:"chaos_passed,omitempty"`
+	ChaosMessage        string      `json:"chaos_message,omitempty"`
 	SchemaTotalTables   int         `json:"schema_total_tables,omitempty"`
 	SchemaMissingTables []string    `json:"schema_missing_tables,omitempty"`
 	SchemaEmptyTables   []string    `json:"schema_empty_tables,omitempty"`
@@ -142,6 +155,11 @@ func JSON(w io.Writer, results []verify.Result) bool {
 			}
 			jr.FallbackRPOSec = r.FallbackRPO.Seconds()
 			jr.FallbackMessage = r.FallbackMessage
+		}
+		if r.ChaosInjected {
+			jr.ChaosInjected = true
+			jr.ChaosPassed = r.ChaosPassed
+			jr.ChaosMessage = r.ChaosMessage
 		}
 		if r.SchemaDrift != nil {
 			jr.SchemaTotalTables = r.SchemaDrift.TotalTables
@@ -226,6 +244,18 @@ func StepSummary(w io.Writer, results []verify.Result) error {
 	fmt.Fprintln(w)
 
 	for _, r := range results {
+		if r.ChaosInjected {
+			if r.ChaosPassed {
+				fmt.Fprintf(w, "### 🧪 Chaos Resilience Verified: `%s`\n\n", r.Target)
+				fmt.Fprintf(w, "> [!TIP]\n")
+				fmt.Fprintf(w, "> %s\n\n", r.ChaosMessage)
+			} else {
+				fmt.Fprintf(w, "### 🧪 Chaos Drill Failure: `%s`\n\n", r.Target)
+				fmt.Fprintf(w, "> [!WARNING]\n")
+				fmt.Fprintf(w, "> %s\n\n", r.ChaosMessage)
+			}
+		}
+
 		if r.FallbackUsed {
 			fmt.Fprintf(w, "### 🔄 Fallback Recovery: `%s`\n\n", r.Target)
 			fmt.Fprintf(w, "> [!IMPORTANT]\n")

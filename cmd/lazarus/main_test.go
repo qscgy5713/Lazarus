@@ -358,3 +358,37 @@ func TestInitSubcommand(t *testing.T) {
 		t.Fatalf("expected generated file %s to exist: %v", targetPath, err)
 	}
 }
+
+func TestExportSubcommand(t *testing.T) {
+	cfgBody := `
+targets:
+  - name: test-export-db
+    engine: sqlite
+    path: /fake/path.db
+`
+	cfgPath := writeConfig(t, cfgBody)
+	dir := t.TempDir()
+	outHTML := filepath.Join(dir, "audit.html")
+
+	stdout, stderr, exitCode, err := runLazarus("export", "--config", cfgPath, "--output", outHTML, "--format", "html")
+	if err != nil {
+		t.Fatalf("run export: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, "successfully exported html") {
+		t.Errorf("stdout = %q, want success message", stdout)
+	}
+
+	content, err := os.ReadFile(outHTML)
+	if err != nil {
+		t.Fatalf("reading exported HTML: %v", err)
+	}
+	if !strings.Contains(string(content), "test-export-db") {
+		t.Errorf("exported HTML missing target name")
+	}
+	if !strings.Contains(string(content), "Lazarus Disaster Recovery Audit Report") {
+		t.Errorf("exported HTML missing default title")
+	}
+}

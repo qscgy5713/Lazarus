@@ -79,16 +79,39 @@ type Result struct {
 
 	// Schema drift analysis
 	SchemaDrift *schema.DriftReport
+
+	// Chaos testing result
+	ChaosInjected bool
+	ChaosPassed   bool
+	ChaosMessage  string
 }
 
-// Run verifies a single target end to end. It only returns an error-free,
-// passing result when the backup actually restored and every check held.
-func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline bool, keepOnFailure bool, gpgPassphrase string) (result Result) {
+// ProgressCallback is invoked as a target transitions between drill stages.
+type ProgressCallback func(target string, stage Stage, detail string, done bool, passed bool)
+
+// Run verifies a single target end to end.
+func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline bool, keepOnFailure bool, gpgPassphrase string) Result {
+	return RunWithProgress(ctx, target, baseline, hasBaseline, keepOnFailure, gpgPassphrase, nil)
+}
+
+// RunWithProgress verifies a single target with live stage progress reporting.
+func RunWithProgress(ctx context.Context, target config.Target, baseline int64, hasBaseline bool, keepOnFailure bool, gpgPassphrase string, onProgress ProgressCallback) (result Result) {
 	started := time.Now()
 	result = Result{Target: target.Name, Tags: target.Tags, Stage: StagePreHook, SLARTO: target.SLARTO}
 
+	reportStage := func(s Stage) {
+		result.Stage = s
+		if onProgress != nil {
+			onProgress(target.Name, s, "", false, false)
+		}
+	}
+	reportStage(StagePreHook)
+
 	defer func() {
 		result.Duration = time.Since(started)
+		if onProgress != nil {
+			onProgress(target.Name, result.Stage, "", true, result.Passed)
+		}
 		// Run post_drill_command if configured
 		if target.PostDrillCommand != "" {
 			hookErr := runHook(ctx, target.PostDrillCommand, target.HooksTimeout, map[string]string{
@@ -128,7 +151,7 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 
 	// 1. Pre-drill hook
 	if target.PreDrillCommand != "" {
-		result.Stage = StagePreHook
+		reportStage(StagePreHook)
 		if err := runHook(ctx, target.PreDrillCommand, target.HooksTimeout, map[string]string{
 			"LAZARUS_TARGET": target.Name,
 			"LAZARUS_ENGINE": string(target.Engine),
@@ -191,8 +214,34 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 	file := allFiles[0]
 	result.Backup = file
 
-	// Run drill against primary (newest) backup
-	primaryErr, primaryStage := executeSingleDrill(ctx, target, file, baseline, hasBaseline, keepOnFailure, gpgPassphrase, &result)
+	var primaryErr error
+	var primaryStage Stage
+
+	// Check if chaos testing is enabled for primary backup
+	if target.Chaos.Enabled {
+		corruptPath, cErr := createCorruptedBackupCopy(file.Path, target.Chaos.CorruptBytes)
+		if cErr == nil {
+			defer os.Remove(corruptPath)
+			result.ChaosInjected = true
+			chaosFile := &backup.File{Path: corruptPath, Size: file.Size, ModTime: file.ModTime}
+			primaryErr, primaryStage = executeSingleDrill(ctx, target, chaosFile, baseline, hasBaseline, keepOnFailure, gpgPassphrase, &result, onProgress)
+			if primaryErr == nil {
+				// Corrupted backup unexpectedly passed
+				result.ChaosPassed = false
+				result.ChaosMessage = fmt.Sprintf("Chaos drill warning: corrupted primary backup %s unexpectedly passed restore", filepath.Base(file.Path))
+				result.Stage = StageDone
+				result.Passed = true
+				return
+			}
+		} else {
+			// Fallback to normal execution if corruption copy failed
+			primaryErr, primaryStage = executeSingleDrill(ctx, target, file, baseline, hasBaseline, keepOnFailure, gpgPassphrase, &result, onProgress)
+		}
+	} else {
+		// Run drill against primary (newest) backup normally
+		primaryErr, primaryStage = executeSingleDrill(ctx, target, file, baseline, hasBaseline, keepOnFailure, gpgPassphrase, &result, onProgress)
+	}
+
 	if primaryErr == nil {
 		result.Stage = StageDone
 		result.Passed = true
@@ -203,6 +252,10 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 	if !target.FallbackOnFailure || len(allFiles) <= 1 {
 		result.Stage = primaryStage
 		result.Err = primaryErr
+		if target.Chaos.Enabled && result.ChaosInjected {
+			result.ChaosPassed = false
+			result.ChaosMessage = fmt.Sprintf("Chaos drill failed: primary corrupted backup failed, but fallback is disabled or no older backups exist")
+		}
 		return
 	}
 
@@ -216,7 +269,7 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 	for i := 1; i < len(allFiles) && i <= maxDepth; i++ {
 		fallbackFile := allFiles[i]
 		fbResult := Result{Target: target.Name, Tags: target.Tags, SLARTO: target.SLARTO, Backup: fallbackFile}
-		fbErr, _ := executeSingleDrill(ctx, target, fallbackFile, baseline, hasBaseline, keepOnFailure, gpgPassphrase, &fbResult)
+		fbErr, _ := executeSingleDrill(ctx, target, fallbackFile, baseline, hasBaseline, keepOnFailure, gpgPassphrase, &fbResult, onProgress)
 		if fbErr == nil {
 			// Fallback succeeded!
 			fallbackFound = true
@@ -232,6 +285,11 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 			result.FallbackRPO = file.ModTime.Sub(fallbackFile.ModTime)
 			result.FallbackMessage = fmt.Sprintf("Primary backup %s failed (%v); successfully fell back to %s (RPO: %s)",
 				filepath.Base(file.Path), primaryErr, filepath.Base(fallbackFile.Path), result.FallbackRPO.Round(time.Second))
+			if target.Chaos.Enabled && result.ChaosInjected {
+				result.ChaosPassed = true
+				result.ChaosMessage = fmt.Sprintf("Chaos drill passed: simulated corruption on %s was resisted; fallback safely restored database from %s (RPO: %s)",
+					filepath.Base(file.Path), filepath.Base(fallbackFile.Path), result.FallbackRPO.Round(time.Second))
+			}
 			break
 		}
 	}
@@ -239,6 +297,11 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 	if !fallbackFound {
 		result.Stage = primaryStage
 		result.Err = fmt.Errorf("%w (fallback drill tried %d older backup(s), all failed)", primaryErr, min(len(allFiles)-1, maxDepth))
+		if target.Chaos.Enabled && result.ChaosInjected {
+			result.ChaosPassed = false
+			result.ChaosMessage = fmt.Sprintf("Chaos drill failed: simulated corruption on %s caused failure, and fallback drills on %d older backup(s) all failed",
+				filepath.Base(file.Path), min(len(allFiles)-1, maxDepth))
+		}
 	}
 	return
 }
@@ -252,6 +315,7 @@ func executeSingleDrill(
 	keepOnFailure bool,
 	gpgPassphrase string,
 	result *Result,
+	onProgress ProgressCallback,
 ) (drillErr error, drillStage Stage) {
 	// Age check
 	if target.MaxAge > 0 {
@@ -278,6 +342,9 @@ func executeSingleDrill(
 	}
 
 	if target.Engine == config.EngineSQLite {
+		if onProgress != nil {
+			onProgress(target.Name, StageRestore, "", false, false)
+		}
 		restoreStarted := time.Now()
 		path, cleanup, err := sqlitecheck.Prepare(ctx, file, gpgPassphrase)
 		if err != nil {
@@ -306,6 +373,9 @@ func executeSingleDrill(
 			})
 		}
 	} else if target.Engine == config.EngineRedis && file.Format == backup.FormatRedisRDB {
+		if onProgress != nil {
+			onProgress(target.Name, StageSandbox, "", false, false)
+		}
 		restoreStarted := time.Now()
 		rdbDir, cleanupRDB, err := redischeck.Prepare(ctx, file, gpgPassphrase)
 		if err != nil {
@@ -337,6 +407,9 @@ func executeSingleDrill(
 			return nil, nil // Redis has no relational table schema
 		}
 	} else {
+		if onProgress != nil {
+			onProgress(target.Name, StageSandbox, "", false, false)
+		}
 		sb, err := sandbox.StartWithOptions(ctx, target.Engine, target.Image, sbOpts)
 		if err != nil {
 			return err, StageSandbox
@@ -352,6 +425,9 @@ func executeSingleDrill(
 			sb.Stop()
 		}()
 
+		if onProgress != nil {
+			onProgress(target.Name, StageRestore, "", false, false)
+		}
 		restoreStarted := time.Now()
 		if _, err := restore.Run(ctx, sb, target.Engine, file, gpgPassphrase); err != nil {
 			return err, StageRestore
@@ -373,6 +449,9 @@ func executeSingleDrill(
 
 	// Schema drift inspection
 	if target.AutoSchemaCheck && inspectSchema != nil {
+		if onProgress != nil {
+			onProgress(target.Name, StageSchema, "", false, false)
+		}
 		tables, err := inspectSchema(ctx)
 		if err != nil {
 			return fmt.Errorf("schema inspection failed: %w", err), StageSchema
@@ -385,6 +464,9 @@ func executeSingleDrill(
 	}
 
 	// Checks
+	if onProgress != nil {
+		onProgress(target.Name, StageChecks, "", false, false)
+	}
 	result.Checks = runChecks(ctx)
 	for _, c := range result.Checks {
 		if !c.Passed {
@@ -519,6 +601,11 @@ func sizeDriftError(current, baseline int64, maxDecreasePct float64) error {
 
 // RunAll verifies every target, continuing past failures.
 func RunAll(ctx context.Context, targets []config.Target, st *state.State, parallelism int, keepOnFailure bool, gpgPassphrase string) []Result {
+	return RunAllWithProgress(ctx, targets, st, parallelism, keepOnFailure, gpgPassphrase, nil)
+}
+
+// RunAllWithProgress verifies every target while reporting stage transitions to onProgress.
+func RunAllWithProgress(ctx context.Context, targets []config.Target, st *state.State, parallelism int, keepOnFailure bool, gpgPassphrase string, onProgress ProgressCallback) []Result {
 	// Proactively sweep any leftover orphan sandboxes in the background
 	go func() {
 		_, _ = sandbox.ReapOrphans(context.Background(), 2*time.Hour)
@@ -545,7 +632,7 @@ func RunAll(ctx context.Context, targets []config.Target, st *state.State, paral
 				baseline, hasBaseline = ts.LastSizeBytes, true
 			}
 
-			result := Run(ctx, target, baseline, hasBaseline, keepOnFailure, gpgPassphrase)
+			result := RunWithProgress(ctx, target, baseline, hasBaseline, keepOnFailure, gpgPassphrase, onProgress)
 			results[i] = result
 
 			if result.Passed && result.Backup != nil {
@@ -559,6 +646,46 @@ func RunAll(ctx context.Context, targets []config.Target, st *state.State, paral
 
 	wg.Wait()
 	return results
+}
+
+// createCorruptedBackupCopy creates a disposable temporary copy of srcPath with
+// deliberate byte flips to simulate backup corruption for chaos drill testing.
+func createCorruptedBackupCopy(srcPath string, corruptBytes int) (string, error) {
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		return "", err
+	}
+	if len(data) == 0 {
+		return "", fmt.Errorf("backup file is empty")
+	}
+
+	corrupted := make([]byte, len(data))
+	copy(corrupted, data)
+
+	if corruptBytes <= 0 {
+		corruptBytes = 64
+	}
+	n := min(corruptBytes, len(corrupted))
+	offset := 0
+	if len(corrupted) > 32 {
+		offset = 16
+	}
+	for i := 0; i < n && (offset+i) < len(corrupted); i++ {
+		corrupted[offset+i] ^= 0xFF
+	}
+
+	tmpFile, err := os.CreateTemp("", "lazarus-chaos-*"+filepath.Ext(srcPath))
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.Write(corrupted); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return "", err
+	}
+	_ = tmpFile.Close()
+	return tmpPath, nil
 }
 
 func isTerminal(f *os.File) bool {
