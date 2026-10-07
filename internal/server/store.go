@@ -189,9 +189,9 @@ func (s *Store) HeartbeatWorker(id string, currentTask string, status WorkerStat
 		return false
 	}
 	w.LastHeartbeat = time.Now().UTC()
-	if currentTask != "" {
-		w.CurrentTask = currentTask
-	}
+	// A heartbeat carries the worker's full current state, so an empty task
+	// means the previous drill finished and must be cleared.
+	w.CurrentTask = currentTask
 	if status != "" {
 		w.Status = status
 	} else if w.CurrentTask != "" {
@@ -223,7 +223,12 @@ func (s *Store) GetWorkers() []WorkerRecord {
 	return out
 }
 
-func (s *Store) ClaimPendingTarget(workerTags []string) (*TargetRecord, bool) {
+// ClaimPendingTarget hands one triggered target to a polling worker. When
+// targetNames is non-empty only those targets are eligible — a worker can
+// only run targets present in its own config, and claiming one it lacks
+// would silently drop the trigger. Otherwise workerTags (if any) must
+// intersect the target's tags.
+func (s *Store) ClaimPendingTarget(workerTags, targetNames []string) (*TargetRecord, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -231,13 +236,20 @@ func (s *Store) ClaimPendingTarget(workerTags []string) (*TargetRecord, bool) {
 	for _, t := range workerTags {
 		tagSet[strings.ToLower(strings.TrimSpace(t))] = true
 	}
+	nameSet := make(map[string]bool, len(targetNames))
+	for _, n := range targetNames {
+		nameSet[n] = true
+	}
 
 	for _, rec := range s.targets {
 		if !rec.TriggerPending {
 			continue
 		}
-		// If worker specifies tags, check intersection
-		if len(tagSet) > 0 {
+		if len(nameSet) > 0 {
+			if !nameSet[rec.Name] {
+				continue
+			}
+		} else if len(tagSet) > 0 {
 			matched := false
 			for _, t := range rec.Tags {
 				if tagSet[strings.ToLower(strings.TrimSpace(t))] {
@@ -275,7 +287,11 @@ func hasTag(tags []string, targetTag string) bool {
 func (s *Store) GetTargetsFiltered(tagFilter string) []*TargetRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.targetsFilteredLocked(tagFilter)
+}
 
+// targetsFilteredLocked requires s.mu to be held (read or write).
+func (s *Store) targetsFilteredLocked(tagFilter string) []*TargetRecord {
 	now := time.Now().UTC()
 	out := make([]*TargetRecord, 0, len(s.targets))
 
@@ -311,7 +327,12 @@ func (s *Store) GetTargets() []*TargetRecord {
 }
 
 func (s *Store) GetSummary() Summary {
-	targets := s.GetTargets()
+	// Hold the lock for the whole computation: the MTTR loop below walks
+	// s.targets directly, which races with RecordReport otherwise.
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	targets := s.targetsFilteredLocked("")
 	var sum Summary
 	sum.TotalTargets = len(targets)
 	slaPassed := 0

@@ -126,29 +126,29 @@ func Text(w io.Writer, results []verify.Result, quiet bool) bool {
 }
 
 type jsonResult struct {
-	Target              string      `json:"target"`
-	Passed              bool        `json:"passed"`
-	Stage               string      `json:"stage"`
-	Error               string      `json:"error,omitempty"`
-	BackupPath          string      `json:"backup_path,omitempty"`
-	BackupAge           string      `json:"backup_age,omitempty"`
-	DurationMs          int64       `json:"duration_ms"`
-	RestoreDurationMs   int64       `json:"restore_duration_ms,omitempty"`
-	Checks              []jsonCheck `json:"checks,omitempty"`
-	DebugHint           string      `json:"debug_hint,omitempty"`
-	FallbackUsed        bool        `json:"fallback_used,omitempty"`
-	FallbackBackup      string      `json:"fallback_backup,omitempty"`
-	FallbackRPOSec      float64     `json:"fallback_rpo_seconds,omitempty"`
-	FallbackMessage     string      `json:"fallback_message,omitempty"`
-	ChaosInjected       bool        `json:"chaos_injected,omitempty"`
-	ChaosPassed         bool        `json:"chaos_passed,omitempty"`
-	ChaosMessage        string      `json:"chaos_message,omitempty"`
-	SchemaTotalTables         int                      `json:"schema_total_tables,omitempty"`
-	SchemaMissingTables       []string                 `json:"schema_missing_tables,omitempty"`
-	SchemaEmptyTables         []string                 `json:"schema_empty_tables,omitempty"`
-	PeakMemoryBytes           int64                    `json:"peak_memory_bytes,omitempty"`
-	DiskFootprintBytes        int64                    `json:"disk_footprint_bytes,omitempty"`
-	IncrementalPatchesApplied []string                 `json:"incremental_patches_applied,omitempty"`
+	Target                    string                    `json:"target"`
+	Passed                    bool                      `json:"passed"`
+	Stage                     string                    `json:"stage"`
+	Error                     string                    `json:"error,omitempty"`
+	BackupPath                string                    `json:"backup_path,omitempty"`
+	BackupAge                 string                    `json:"backup_age,omitempty"`
+	DurationMs                int64                     `json:"duration_ms"`
+	RestoreDurationMs         int64                     `json:"restore_duration_ms,omitempty"`
+	Checks                    []jsonCheck               `json:"checks,omitempty"`
+	DebugHint                 string                    `json:"debug_hint,omitempty"`
+	FallbackUsed              bool                      `json:"fallback_used,omitempty"`
+	FallbackBackup            string                    `json:"fallback_backup,omitempty"`
+	FallbackRPOSec            float64                   `json:"fallback_rpo_seconds,omitempty"`
+	FallbackMessage           string                    `json:"fallback_message,omitempty"`
+	ChaosInjected             bool                      `json:"chaos_injected,omitempty"`
+	ChaosPassed               bool                      `json:"chaos_passed,omitempty"`
+	ChaosMessage              string                    `json:"chaos_message,omitempty"`
+	SchemaTotalTables         int                       `json:"schema_total_tables,omitempty"`
+	SchemaMissingTables       []string                  `json:"schema_missing_tables,omitempty"`
+	SchemaEmptyTables         []string                  `json:"schema_empty_tables,omitempty"`
+	PeakMemoryBytes           int64                     `json:"peak_memory_bytes,omitempty"`
+	DiskFootprintBytes        int64                     `json:"disk_footprint_bytes,omitempty"`
+	IncrementalPatchesApplied []string                  `json:"incremental_patches_applied,omitempty"`
 	Remediation               *verify.RemediationResult `json:"remediation,omitempty"`
 	HasRPOCheck               bool                      `json:"has_rpo_check,omitempty"`
 	MaxRPOLagSec              float64                   `json:"max_rpo_lag_seconds,omitempty"`

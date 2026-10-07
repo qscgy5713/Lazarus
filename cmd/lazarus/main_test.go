@@ -365,6 +365,7 @@ targets:
   - name: test-export-db
     engine: sqlite
     path: /fake/path.db
+state_file: ` + filepath.Join(t.TempDir(), "missing-state.json") + `
 `
 	cfgPath := writeConfig(t, cfgBody)
 	dir := t.TempDir()
@@ -390,5 +391,10 @@ targets:
 	}
 	if !strings.Contains(string(content), "Lazarus Disaster Recovery Audit Report") {
 		t.Errorf("exported HTML missing default title")
+	}
+	// No state file entry means no evidence of a successful run; the audit
+	// report must not present the target as passing.
+	if !strings.Contains(string(content), "no successful verification recorded") {
+		t.Errorf("exported HTML should flag the never-verified target")
 	}
 }

@@ -184,7 +184,30 @@ func query(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, sql s
 	if err != nil {
 		return "", fmt.Errorf("query failed: %w", err)
 	}
+	if engine == config.EngineMySQL {
+		out = StripMySQLPasswordWarning(out)
+	}
 	return out, nil
+}
+
+// mysqlPasswordWarning is what the mysql client prints (to stderr, which
+// Exec folds into the same stream) whenever --password is on the command line.
+const mysqlPasswordWarning = "Using a password on the command line"
+
+// StripMySQLPasswordWarning drops the mysql client's password warning line so
+// string, pattern and timestamp checks see only the query's own output.
+func StripMySQLPasswordWarning(out string) string {
+	if !strings.Contains(out, mysqlPasswordWarning) {
+		return out
+	}
+	lines := strings.Split(out, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if !strings.Contains(line, mysqlPasswordWarning) {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 // parseScalar pulls a single number out of a client's output. Checks are
@@ -197,7 +220,7 @@ func parseScalar(raw string) (int64, error) {
 	lines := make([]string, 0, 2)
 	for _, line := range strings.Split(cleaned, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.Contains(line, "Using a password on the command line") {
+		if line == "" || strings.Contains(line, mysqlPasswordWarning) {
 			continue
 		}
 		lines = append(lines, line)

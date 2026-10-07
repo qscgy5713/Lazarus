@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -131,6 +132,11 @@ func main() {
 		st = state.New()
 	}
 
+	if *daemon && *workerMode {
+		fmt.Fprintln(os.Stderr, "lazarus: --daemon and --worker are mutually exclusive")
+		os.Exit(2)
+	}
+
 	if *daemon {
 		runDaemon(ctx, cfg, targets, st, *keepOnFailure, *asJSON, *quiet, *liveProgress, *outputHTML, *interval)
 		return
@@ -159,7 +165,10 @@ func runWorker(ctx context.Context, cfg *config.Config, targets []config.Target,
 	if pollInterval <= 0 {
 		pollInterval = 3 * time.Second
 	}
-	cpURL = strings.TrimRight(cpURL, "/")
+	if token == "" {
+		// The worker usually talks to the same control plane it reports to.
+		token = cfg.Notify.APIKey
+	}
 
 	hostname, _ := os.Hostname()
 	if hostname == "" {
@@ -169,9 +178,11 @@ func runWorker(ctx context.Context, cfg *config.Config, targets []config.Target,
 		wID = fmt.Sprintf("runner-%s-%d", hostname, os.Getpid())
 	}
 
-	// Collect unique tags from configured targets
+	// Collect unique tags and the exact target names this worker can run.
 	tagMap := make(map[string]bool)
+	targetNames := make([]string, 0, len(targets))
 	for _, t := range targets {
+		targetNames = append(targetNames, t.Name)
 		for _, tag := range t.Tags {
 			tagMap[tag] = true
 		}
@@ -181,124 +192,191 @@ func runWorker(ctx context.Context, cfg *config.Config, targets []config.Target,
 		tags = append(tags, tag)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-
-	// 1. Register with control plane
-	regPayload, _ := json.Marshal(map[string]any{
-		"id":       wID,
-		"hostname": hostname,
-		"version":  version,
-		"tags":     tags,
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cpURL+"/api/v1/workers/register", bytes.NewReader(regPayload))
-	if err == nil {
-		req.Header.Set("Content-Type", "application/json")
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "lazarus worker: WARNING: failed to register with control plane: %v\n", err)
-		} else {
-			_ = resp.Body.Close()
-		}
+	wc := &workerClient{
+		baseURL: strings.TrimRight(cpURL, "/"),
+		token:   token,
+		client:  &http.Client{Timeout: 10 * time.Second},
+		register: map[string]any{
+			"id":       wID,
+			"hostname": hostname,
+			"version":  version,
+			"tags":     tags,
+		},
+		id: wID,
 	}
 
-	fmt.Printf("lazarus worker: registered as %q (host: %s, tags: %v)\n", wID, hostname, tags)
-	fmt.Printf("lazarus worker: polling control plane %s every %s (Ctrl+C to stop)\n", cpURL, pollInterval)
+	if err := wc.registerWorker(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "lazarus worker: WARNING: failed to register with control plane (will retry on heartbeat): %v\n", err)
+	} else {
+		fmt.Printf("lazarus worker: registered as %q (host: %s, tags: %v)\n", wID, hostname, tags)
+	}
+	fmt.Printf("lazarus worker: polling control plane %s every %s (Ctrl+C to stop)\n", wc.baseURL, pollInterval)
 
-	// Heartbeat helper
-	sendHeartbeat := func(status, currentTask string) {
-		hbPayload, _ := json.Marshal(map[string]string{
-			"id":           wID,
-			"status":       status,
-			"current_task": currentTask,
-		})
-		hbReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, cpURL+"/api/v1/workers/heartbeat", bytes.NewReader(hbPayload))
-		if err == nil {
-			hbReq.Header.Set("Content-Type", "application/json")
-			if token != "" {
-				hbReq.Header.Set("Authorization", "Bearer "+token)
-			}
-			resp, err := client.Do(hbReq)
-			if err == nil {
-				_ = resp.Body.Close()
+	// Heartbeats run on their own goroutine: a drill can take far longer than
+	// the control plane's 60s offline cutoff, and the poll loop below is
+	// blocked for the whole drill.
+	hbDone := make(chan struct{})
+	go func() {
+		defer close(hbDone)
+		hbTicker := time.NewTicker(10 * time.Second)
+		defer hbTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hbTicker.C:
+				wc.heartbeat(ctx)
 			}
 		}
-	}
-
-	// Background heartbeat ticker
-	hbTicker := time.NewTicker(10 * time.Second)
-	defer hbTicker.Stop()
+	}()
 
 	pollTicker := time.NewTicker(pollInterval)
 	defer pollTicker.Stop()
 
-	currentStatus := "online"
-	currentTask := ""
-
 	for {
 		select {
 		case <-ctx.Done():
+			<-hbDone
 			fmt.Println("\nlazarus worker: shutting down, unregistering...")
-			sendHeartbeat("offline", "")
+			wc.setTask("offline", "")
+			wc.heartbeat(context.Background())
 			return
 
-		case <-hbTicker.C:
-			sendHeartbeat(currentStatus, currentTask)
-
 		case <-pollTicker.C:
-			// Poll for pending drill tasks
-			pollBody, _ := json.Marshal(map[string]any{
-				"worker_id": wID,
-				"tags":      tags,
-			})
-			pReq, err := http.NewRequestWithContext(ctx, http.MethodPost, cpURL+"/api/v1/workers/poll", bytes.NewReader(pollBody))
+			name, err := wc.poll(ctx, tags, targetNames)
 			if err != nil {
+				if ctx.Err() == nil {
+					fmt.Fprintf(os.Stderr, "lazarus worker: poll failed: %v\n", err)
+				}
 				continue
 			}
-			pReq.Header.Set("Content-Type", "application/json")
-			if token != "" {
-				pReq.Header.Set("Authorization", "Bearer "+token)
-			}
-			pResp, err := client.Do(pReq)
-			if err != nil {
+			if name == "" {
 				continue
 			}
-			var pollRes struct {
-				HasTask    bool   `json:"has_task"`
-				TargetName string `json:"target_name"`
+
+			var matched *config.Target
+			for i := range targets {
+				if targets[i].Name == name {
+					matched = &targets[i]
+					break
+				}
 			}
-			_ = json.NewDecoder(pResp.Body).Decode(&pollRes)
-			_ = pResp.Body.Close()
+			if matched == nil {
+				fmt.Fprintf(os.Stderr, "lazarus worker: claimed target %q but not found in local config\n", name)
+				continue
+			}
 
-			if pollRes.HasTask && pollRes.TargetName != "" {
-				var matched *config.Target
-				for i := range targets {
-					if targets[i].Name == pollRes.TargetName {
-						matched = &targets[i]
-						break
-					}
-				}
+			fmt.Printf("[%s] lazarus worker: claimed task -> executing drill for %q\n", time.Now().Format("15:04:05"), matched.Name)
+			wc.setTask("busy", matched.Name)
+			wc.heartbeat(ctx)
 
-				if matched == nil {
-					fmt.Fprintf(os.Stderr, "lazarus worker: claimed target %q but not found in local config\n", pollRes.TargetName)
-					continue
-				}
+			runOnce(ctx, cfg, []config.Target{*matched}, st, keepOnFailure, asJSON, quiet, live, outputHTML)
 
-				fmt.Printf("[%s] lazarus worker: claimed task -> executing drill for %q\n", time.Now().Format("15:04:05"), matched.Name)
-				currentStatus = "busy"
-				currentTask = matched.Name
-				sendHeartbeat(currentStatus, currentTask)
+			wc.setTask("online", "")
+			wc.heartbeat(ctx)
+		}
+	}
+}
 
-				runOnce(ctx, cfg, []config.Target{*matched}, st, keepOnFailure, asJSON, quiet, live, outputHTML)
+// workerClient talks to the control plane's worker API.
+type workerClient struct {
+	baseURL  string
+	token    string
+	client   *http.Client
+	register map[string]any
+	id       string
 
-				currentStatus = "online"
-				currentTask = ""
-				sendHeartbeat(currentStatus, currentTask)
+	mu     sync.Mutex
+	status string
+	task   string
+}
+
+func (wc *workerClient) setTask(status, task string) {
+	wc.mu.Lock()
+	wc.status, wc.task = status, task
+	wc.mu.Unlock()
+}
+
+func (wc *workerClient) post(ctx context.Context, path string, payload any) (*http.Response, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wc.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if wc.token != "" {
+		req.Header.Set("Authorization", "Bearer "+wc.token)
+	}
+	return wc.client.Do(req)
+}
+
+func (wc *workerClient) registerWorker(ctx context.Context) error {
+	resp, err := wc.post(ctx, "/api/v1/workers/register", wc.register)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("control plane returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// heartbeat reports the current state, re-registering when the control
+// plane no longer knows this worker (its registry is in-memory, so a
+// control plane restart forgets every worker).
+func (wc *workerClient) heartbeat(ctx context.Context) {
+	wc.mu.Lock()
+	status, task := wc.status, wc.task
+	wc.mu.Unlock()
+	if status == "" {
+		status = "online"
+	}
+	payload := map[string]string{"id": wc.id, "status": status, "current_task": task}
+
+	resp, err := wc.post(ctx, "/api/v1/workers/heartbeat", payload)
+	if err != nil {
+		return
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound && status != "offline" {
+		if err := wc.registerWorker(ctx); err == nil {
+			if resp, err := wc.post(ctx, "/api/v1/workers/heartbeat", payload); err == nil {
+				_ = resp.Body.Close()
 			}
 		}
 	}
+}
+
+// poll asks for a pending drill and returns the claimed target name, or ""
+// when there is nothing to do.
+func (wc *workerClient) poll(ctx context.Context, tags, targetNames []string) (string, error) {
+	resp, err := wc.post(ctx, "/api/v1/workers/poll", map[string]any{
+		"worker_id": wc.id,
+		"tags":      tags,
+		"targets":   targetNames,
+	})
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("control plane returned status %d", resp.StatusCode)
+	}
+	var pollRes struct {
+		HasTask    bool   `json:"has_task"`
+		TargetName string `json:"target_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&pollRes); err != nil {
+		return "", fmt.Errorf("decode poll response: %w", err)
+	}
+	if !pollRes.HasTask {
+		return "", nil
+	}
+	return pollRes.TargetName, nil
 }
 
 func runOnce(ctx context.Context, cfg *config.Config, targets []config.Target, st *state.State, keepOnFailure, asJSON, quiet, live bool, outputHTML string) bool {
@@ -651,6 +729,13 @@ func exportCommand(args []string) {
 				Size:    ts.LastSizeBytes,
 				ModTime: ts.UpdatedAt,
 			}
+		} else {
+			// The state file only records successful runs; without an entry
+			// there is no evidence this target ever verified, and an audit
+			// report must not claim it did.
+			r.Passed = false
+			r.Stage = verify.StageLocate
+			r.Err = fmt.Errorf("no successful verification recorded in state file %q", cfg.StateFile)
 		}
 		results = append(results, r)
 	}

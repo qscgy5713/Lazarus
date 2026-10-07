@@ -37,7 +37,7 @@ func TestCompareDrift(t *testing.T) {
 
 	current := []TableInfo{
 		{Name: "users", RowCount: 110},
-		{Name: "orders", RowCount: 0}, // row count collapsed to 0
+		{Name: "orders", RowCount: 0},   // row count collapsed to 0
 		{Name: "billing", RowCount: 10}, // new table
 		// logs missing
 	}

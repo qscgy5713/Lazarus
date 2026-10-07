@@ -19,7 +19,9 @@ var version = "dev"
 
 func main() {
 	addr := flag.String("addr", getEnvOrDefault("ADDR", ":8080"), "HTTP listen address (e.g. :8080)")
-	apiKey := flag.String("api-key", os.Getenv("SERVER_API_KEY"), "Optional API key for webhook authentication")
+	apiKey := flag.String("api-key", os.Getenv("SERVER_API_KEY"), "Optional API key for webhook authentication (acts as the admin key when -admin-key is unset)")
+	adminKey := flag.String("admin-key", os.Getenv("ADMIN_KEY"), "RBAC admin key: trigger, mute, report ingestion and worker registration")
+	viewerKey := flag.String("viewer-key", os.Getenv("VIEWER_KEY"), "RBAC read-only viewer key: dashboard, reports and audit exports")
 	stateFile := flag.String("state", getEnvOrDefault("STATE_FILE", "lazarus-server.json"), "Path to persist target states")
 	overdueStr := flag.String("overdue", getEnvOrDefault("OVERDUE_THRESHOLD", "26h"), "Threshold after which a target is marked Overdue")
 	demoMode := flag.Bool("demo", os.Getenv("DEMO_MODE") == "true" || os.Getenv("DEMO_MODE") == "1", "Seed demo drill records on startup")
@@ -51,6 +53,8 @@ func main() {
 	srv := server.New(server.Config{
 		Addr:             *addr,
 		APIKey:           *apiKey,
+		AdminKey:         *adminKey,
+		ViewerKey:        *viewerKey,
 		StateFile:        *stateFile,
 		OverdueThreshold: overdueThreshold,
 		DemoMode:         *demoMode,
@@ -71,7 +75,7 @@ func main() {
 	if *demoMode {
 		fmt.Println("   Demo Mode     : Active (Preloaded sample drill records)")
 	}
-	if *apiKey != "" {
+	if *apiKey != "" || *adminKey != "" || *viewerKey != "" {
 		fmt.Println("   Authentication: Enabled (X-Lazarus-Key / Bearer Token)")
 	} else {
 		fmt.Println("   Authentication: Open (No API Key set)")

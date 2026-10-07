@@ -252,3 +252,18 @@ func TestEvaluateRPO(t *testing.T) {
 		t.Errorf("unexpected error message: %s", reason)
 	}
 }
+
+func TestStripMySQLPasswordWarning(t *testing.T) {
+	raw := "mysql: [Warning] Using a password on the command line interface can be insecure.\na,b,c\n"
+	got := StripMySQLPasswordWarning(raw)
+	if strings.TrimSpace(got) != "a,b,c" {
+		t.Fatalf("got %q", got)
+	}
+	want := "a,b,c"
+	if ok, reason := EvaluateString(got, config.Check{ExpectString: &want}); !ok {
+		t.Fatalf("expect_string should pass after stripping: %s", reason)
+	}
+	if out := StripMySQLPasswordWarning("plain"); out != "plain" {
+		t.Fatalf("unrelated output changed: %q", out)
+	}
+}

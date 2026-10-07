@@ -470,6 +470,24 @@
       return res;
     }
 
+    // EventSource and plain download links can't send an Authorization
+    // header, so the token rides along as ?api_key= (accepted by the server).
+    function withToken(url) {
+      if (!authToken) return url;
+      return url + (url.includes('?') ? '&' : '?') + 'api_key=' + encodeURIComponent(authToken);
+    }
+
+    function updateExportLinks() {
+      const csvBtn = document.getElementById('exportCSVBtn');
+      if (csvBtn) {
+        csvBtn.href = withToken('/api/v1/export/csv' + (currentTag ? '?tag=' + encodeURIComponent(currentTag) : ''));
+      }
+      const pdfBtn = document.getElementById('exportPDFBtn');
+      if (pdfBtn) {
+        pdfBtn.href = withToken('/api/v1/export/certificate.pdf');
+      }
+    }
+
     function escapeHtml(str) {
       if (str === null || str === undefined) return '';
       return String(str)
@@ -490,6 +508,11 @@
           authFetch('/api/v1/reports'),
           authFetch('/api/v1/metrics/daily?days=30')
         ]);
+        if ([sumRes, tgtRes, repRes, dailyRes].some(r => r.status === 401)) {
+          // Auth is configured and this browser has no valid token yet.
+          openAuthModal();
+          return;
+        }
         const summary = await sumRes.json();
         const targets = await tgtRes.json();
         const reports = await repRes.json();
@@ -616,7 +639,7 @@
         const cls = active
           ? 'bg-indigo-600 text-white border-indigo-500 shadow-sm'
           : 'bg-slate-900 text-slate-300 hover:bg-slate-800 hover:text-white border-slate-800';
-        html += `<button onclick="filterByTag('${escapeHtml(tag)}')" class="px-2.5 py-1 text-xs rounded-md border font-mono transition ${cls}">#${escapeHtml(tag)} <span class="opacity-60 text-[10px]">(${tagCounts[tag]})</span></button>`;
+        html += `<button onclick="filterByTag(this.getAttribute('data-tag'))" data-tag="${escapeHtml(tag)}" class="px-2.5 py-1 text-xs rounded-md border font-mono transition ${cls}">#${escapeHtml(tag)} <span class="opacity-60 text-[10px]">(${tagCounts[tag]})</span></button>`;
       });
 
       bar.innerHTML = html;
@@ -624,10 +647,7 @@
 
     function filterByTag(tag) {
       currentTag = (currentTag.toLowerCase() === tag.toLowerCase()) ? '' : tag;
-      const csvBtn = document.getElementById('exportCSVBtn');
-      if (csvBtn) {
-        csvBtn.href = '/api/v1/export/csv' + (currentTag ? '?tag=' + encodeURIComponent(currentTag) : '');
-      }
+      updateExportLinks();
       renderTagFilterBar();
       applyTargetFilter();
     }
@@ -840,7 +860,7 @@
 
         const tagsHtml = (t.tags && t.tags.length > 0)
           ? '<div class="flex flex-wrap gap-1 mt-1">' +
-              t.tags.map(tag => `<button onclick="filterByTag('${escapeHtml(tag)}')" class="px-1.5 py-0.5 text-[10px] font-mono rounded bg-sky-950/70 hover:bg-sky-900 text-sky-400 border border-sky-800/60 transition">#${escapeHtml(tag)}</button>`).join('') +
+              t.tags.map(tag => `<button onclick="filterByTag(this.getAttribute('data-tag'))" data-tag="${escapeHtml(tag)}" class="px-1.5 py-0.5 text-[10px] font-mono rounded bg-sky-950/70 hover:bg-sky-900 text-sky-400 border border-sky-800/60 transition">#${escapeHtml(tag)}</button>`).join('') +
             '</div>'
           : '';
 
@@ -1232,7 +1252,7 @@
                 <span class="font-mono text-white font-bold">${escapeHtml(w.id)}</span>
                 <span class="text-slate-400 text-[11px] font-mono">(${escapeHtml(w.hostname || 'unknown')} &bull; v${escapeHtml(w.version || 'dev')})</span>
               </div>
-              <span class="px-2 py-0.5 rounded text-[10px] font-bold border uppercase ${statusBadge}">${w.status}</span>
+              <span class="px-2 py-0.5 rounded text-[10px] font-bold border uppercase ${statusBadge}">${escapeHtml(w.status)}</span>
             </div>
             <div class="flex items-center space-x-2 text-[11px] text-slate-400">
               <span>Tags:</span>
@@ -1264,7 +1284,7 @@
           const authLabel = document.getElementById('authLabel');
           const authBadge = document.getElementById('authCurrentRoleBadge');
           if (authLabel) {
-            authLabel.innerText = data.role === 'admin' ? 'Admin' : 'Viewer';
+            authLabel.innerText = data.role === 'admin' ? 'Admin' : (data.role === 'viewer' ? 'Viewer' : 'Locked');
             authLabel.className = data.role === 'admin' ? 'text-indigo-300 font-bold' : 'text-amber-400 font-medium';
           }
           if (authBadge) {
@@ -1301,6 +1321,8 @@
       }
       checkAuthRole();
       closeAuthModal();
+      updateExportLinks();
+      initSSE();
       fetchData();
       fetchWorkers();
     }
@@ -1312,6 +1334,8 @@
       if (input) input.value = '';
       checkAuthRole();
       closeAuthModal();
+      updateExportLinks();
+      initSSE();
       fetchData();
       fetchWorkers();
     }
@@ -1328,9 +1352,12 @@
     });
 
     // Realtime Server-Sent Events (SSE) Stream
+    let eventSource = null;
     function initSSE() {
       if (!window.EventSource) return;
-      const es = new EventSource('/api/v1/stream');
+      if (eventSource) eventSource.close();
+      const es = new EventSource(withToken('/api/v1/stream'));
+      eventSource = es;
       const dot = document.getElementById('sseDot');
       const label = document.getElementById('sseLabel');
 
@@ -1402,6 +1429,7 @@
 
     initTheme();
     checkAuthRole();
+    updateExportLinks();
     fetchData();
     fetchWorkers();
     initSSE();

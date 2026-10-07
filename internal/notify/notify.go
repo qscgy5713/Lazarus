@@ -425,13 +425,34 @@ type genericResult struct {
 	Checks            []genericCheck `json:"checks,omitempty"`
 	DebugHint         string         `json:"debug_hint,omitempty"`
 	LogsTail          string         `json:"logs_tail,omitempty"`
+
+	// Fields below feed the control plane's RPO, resource-profiling and
+	// remediation views; they match server.InboundResult's JSON names.
+	PeakMemoryBytes           int64               `json:"peak_memory_bytes,omitempty"`
+	DiskFootprintBytes        int64               `json:"disk_footprint_bytes,omitempty"`
+	IncrementalPatchesApplied []string            `json:"incremental_patches_applied,omitempty"`
+	Remediation               *genericRemediation `json:"remediation,omitempty"`
+	HasRPOCheck               bool                `json:"has_rpo_check,omitempty"`
+	MaxRPOLagSec              float64             `json:"max_rpo_lag_seconds,omitempty"`
+	RPOViolated               bool                `json:"rpo_violated,omitempty"`
+}
+
+type genericRemediation struct {
+	Triggered  bool   `json:"triggered"`
+	Command    string `json:"command"`
+	Success    bool   `json:"success"`
+	Output     string `json:"output,omitempty"`
+	Error      string `json:"error,omitempty"`
+	DurationMs int64  `json:"duration_ms"`
 }
 
 type genericCheck struct {
-	Name   string `json:"name"`
-	Passed bool   `json:"passed"`
-	Value  int64  `json:"value"`
-	Reason string `json:"reason,omitempty"`
+	Name       string  `json:"name"`
+	Passed     bool    `json:"passed"`
+	Value      int64   `json:"value"`
+	Reason     string  `json:"reason,omitempty"`
+	IsRPOCheck bool    `json:"is_rpo_check,omitempty"`
+	RPOLagSec  float64 `json:"rpo_lag_seconds,omitempty"`
 }
 
 func buildGeneric(results []verify.Result) genericPayload {
@@ -454,9 +475,28 @@ func buildGeneric(results []verify.Result) genericPayload {
 			SLARTOMs:          r.SLARTO.Milliseconds(),
 			DebugHint:         r.DebugHint,
 			LogsTail:          r.LogsTail,
+
+			PeakMemoryBytes:           r.PeakMemoryBytes,
+			DiskFootprintBytes:        r.DiskFootprintBytes,
+			IncrementalPatchesApplied: r.IncrementalPatchesApplied,
+			HasRPOCheck:               r.HasRPOCheck,
+			MaxRPOLagSec:              r.MaxRPOLag.Seconds(),
+			RPOViolated:               r.RPOViolated,
+		}
+		if rem := r.Remediation; rem != nil {
+			gr.Remediation = &genericRemediation{
+				Triggered:  rem.Triggered,
+				Command:    rem.Command,
+				Success:    rem.Success,
+				Output:     rem.Output,
+				Error:      rem.Error,
+				DurationMs: rem.Duration.Milliseconds(),
+			}
 		}
 		if r.Err != nil {
 			gr.Error = r.Err.Error()
+		}
+		if !r.Passed {
 			payload.Failed++
 		}
 		if r.Backup != nil {
@@ -467,10 +507,12 @@ func buildGeneric(results []verify.Result) genericPayload {
 		}
 		for _, c := range r.Checks {
 			gr.Checks = append(gr.Checks, genericCheck{
-				Name:   c.Name,
-				Passed: c.Passed,
-				Value:  c.Value,
-				Reason: c.Reason,
+				Name:       c.Name,
+				Passed:     c.Passed,
+				Value:      c.Value,
+				Reason:     c.Reason,
+				IsRPOCheck: c.IsRPOCheck,
+				RPOLagSec:  c.RPOLag.Seconds(),
 			})
 		}
 		payload.Results = append(payload.Results, gr)
@@ -507,13 +549,13 @@ func (n *Notifier) buildTelegram(results []verify.Result) telegramPayload {
 }
 
 type teamsPayload struct {
-	Type            string                `json:"@type"`
-	Context         string                `json:"@context"`
-	ThemeColor      string                `json:"themeColor"`
-	Summary         string                `json:"summary"`
-	Title           string                `json:"title"`
-	Sections        []teamsSection        `json:"sections"`
-	PotentialAction []teamsAction         `json:"potentialAction,omitempty"`
+	Type            string         `json:"@type"`
+	Context         string         `json:"@context"`
+	ThemeColor      string         `json:"themeColor"`
+	Summary         string         `json:"summary"`
+	Title           string         `json:"title"`
+	Sections        []teamsSection `json:"sections"`
+	PotentialAction []teamsAction  `json:"potentialAction,omitempty"`
 }
 
 type teamsAction struct {

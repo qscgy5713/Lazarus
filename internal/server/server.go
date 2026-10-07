@@ -43,6 +43,10 @@ type Server struct {
 	alertDone     chan struct{}
 	streamClients map[chan []byte]struct{}
 	streamMu      sync.RWMutex
+	// streamStop is closed on Shutdown so long-lived SSE handlers return;
+	// otherwise http.Server.Shutdown waits on them until its deadline.
+	streamStop     chan struct{}
+	streamStopOnce sync.Once
 }
 
 func New(cfg Config) *Server {
@@ -68,6 +72,7 @@ func New(cfg Config) *Server {
 		alertStop:     make(chan struct{}),
 		alertDone:     make(chan struct{}),
 		streamClients: make(map[chan []byte]struct{}),
+		streamStop:    make(chan struct{}),
 	}
 	s.routes()
 	if cfg.AlertWebhookURL != "" {
@@ -106,6 +111,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 
+	s.streamStopOnce.Do(func() { close(s.streamStop) })
+
 	s.httpSrvMu.Lock()
 	srv := s.httpSrv
 	s.httpSrvMu.Unlock()
@@ -141,19 +148,33 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/stream", s.handleStream)
 }
 
-func (s *Server) getRole(r *http.Request) UserRole {
-	adminKey := s.cfg.AdminKey
-	if adminKey == "" {
-		adminKey = s.cfg.APIKey
+// adminKey is the explicit admin key, falling back to the legacy APIKey.
+func (s *Server) adminKey() string {
+	if s.cfg.AdminKey != "" {
+		return s.cfg.AdminKey
 	}
+	return s.cfg.APIKey
+}
+
+// authRequired reports whether any key is configured. With none, every
+// caller is treated as admin for backward compatibility.
+func (s *Server) authRequired() bool {
+	return s.adminKey() != "" || s.cfg.ViewerKey != ""
+}
+
+func (s *Server) getRole(r *http.Request) UserRole {
+	return s.roleForToken(s.extractToken(r))
+}
+
+func (s *Server) roleForToken(token string) UserRole {
+	adminKey := s.adminKey()
 	viewerKey := s.cfg.ViewerKey
 
 	// If no auth keys configured at all, grant RoleAdmin by default
-	if adminKey == "" && viewerKey == "" {
+	if !s.authRequired() {
 		return RoleAdmin
 	}
 
-	token := s.extractToken(r)
 	if token == "" {
 		return RoleAnonymous
 	}
@@ -200,14 +221,6 @@ func (s *Server) requireRole(w http.ResponseWriter, r *http.Request, minRole Use
 	return false
 }
 
-func (s *Server) checkAuth(r *http.Request) bool {
-	return s.getRole(r) != RoleAnonymous
-}
-
-func (s *Server) checkStreamAuth(r *http.Request) bool {
-	return s.getRole(r) != RoleAnonymous
-}
-
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	summary := s.store.GetSummary()
 	uptime := time.Since(s.startTime).Round(time.Second).Seconds()
@@ -243,8 +256,8 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePostReport(w http.ResponseWriter, r *http.Request) {
-	if !s.checkAuth(r) {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	// Reports are audit evidence; a read-only viewer must not be able to forge them.
+	if !s.requireRole(w, r, RoleAdmin) {
 		return
 	}
 
@@ -264,6 +277,9 @@ func (s *Server) handlePostReport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetTargets(w http.ResponseWriter, r *http.Request) {
+	if !s.requireRole(w, r, RoleViewer) {
+		return
+	}
 	tag := r.URL.Query().Get("tag")
 	targets := s.store.GetTargetsFiltered(tag)
 	w.Header().Set("Content-Type", "application/json")
@@ -271,26 +287,33 @@ func (s *Server) handleGetTargets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetReports(w http.ResponseWriter, r *http.Request) {
+	if !s.requireRole(w, r, RoleViewer) {
+		return
+	}
 	reports := s.store.GetRecentReports()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(reports)
 }
 
 func (s *Server) handleGetSummary(w http.ResponseWriter, r *http.Request) {
+	if !s.requireRole(w, r, RoleViewer) {
+		return
+	}
 	summary := s.store.GetSummary()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(summary)
 }
 
 func (s *Server) handleGetDailyMetrics(w http.ResponseWriter, r *http.Request) {
-	if !s.checkAuth(r) {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	if !s.requireRole(w, r, RoleViewer) {
 		return
 	}
 	days := 30
 	if dStr := r.URL.Query().Get("days"); dStr != "" {
 		if d, err := strconv.Atoi(dStr); err == nil && d > 0 {
-			days = d
+			// One bucket is allocated per day, so an unbounded value is a
+			// trivial memory-exhaustion request.
+			days = min(d, maxDailyMetricsDays)
 		}
 	}
 	metrics := s.store.GetDailyMetrics(days)
@@ -358,6 +381,9 @@ func (s *Server) handleTriggerTarget(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
+	if !s.requireRole(w, r, RoleViewer) {
+		return
+	}
 	targetFilter := r.URL.Query().Get("target")
 	statusFilter := r.URL.Query().Get("status")
 	tagFilter := r.URL.Query().Get("tag")
@@ -423,6 +449,9 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleExportPDF(w http.ResponseWriter, r *http.Request) {
+	if !s.requireRole(w, r, RoleViewer) {
+		return
+	}
 	tagFilter := r.URL.Query().Get("tag")
 	targets := s.store.GetTargetsFiltered(tagFilter)
 	summary := s.store.GetSummary()
@@ -605,8 +634,7 @@ func (s *Server) Broadcast(eventType string, payload any) {
 }
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
-	if !s.checkStreamAuth(r) {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	if !s.requireRole(w, r, RoleViewer) {
 		return
 	}
 
@@ -644,6 +672,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-s.streamStop:
+			return
 		case msg := <-msgCh:
 			_, _ = w.Write(msg)
 			flusher.Flush()
@@ -656,12 +686,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	role := s.getRole(r)
-	authRequired := s.cfg.AdminKey != "" || s.cfg.ViewerKey != ""
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(AuthStatusResponse{
 		Role:          role,
 		Authenticated: role != RoleAnonymous,
-		AuthRequired:  authRequired,
+		AuthRequired:  s.authRequired(),
 	})
 }
 
@@ -669,25 +698,20 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Token string `json:"token"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxSmallBodyBytes)
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	fakeReq, _ := http.NewRequest(http.MethodGet, "/", nil)
-	if body.Token != "" {
-		fakeReq.Header.Set("Authorization", "Bearer "+body.Token)
-	}
-
-	role := s.getRole(fakeReq)
+	role := s.roleForToken(body.Token)
 	if role == RoleAnonymous {
 		http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 		return
 	}
 
-	authRequired := s.cfg.AdminKey != "" || s.cfg.ViewerKey != ""
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(AuthStatusResponse{
 		Role:          role,
 		Authenticated: true,
-		AuthRequired:  authRequired,
+		AuthRequired:  s.authRequired(),
 	})
 }
 
@@ -701,12 +725,17 @@ func (s *Server) handleGetWorkers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
-	if !s.requireRole(w, r, RoleViewer) {
+	if !s.requireRole(w, r, RoleAdmin) {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxSmallBodyBytes)
 	var wrk WorkerRecord
 	if err := json.NewDecoder(r.Body).Decode(&wrk); err != nil || wrk.ID == "" {
 		http.Error(w, `{"error":"invalid worker record (id is required)"}`, http.StatusBadRequest)
+		return
+	}
+	if !validWorkerStatus(wrk.Status) {
+		http.Error(w, `{"error":"invalid worker status"}`, http.StatusBadRequest)
 		return
 	}
 	s.store.RegisterWorker(wrk)
@@ -716,15 +745,16 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHeartbeatWorker(w http.ResponseWriter, r *http.Request) {
-	if !s.requireRole(w, r, RoleViewer) {
+	if !s.requireRole(w, r, RoleAdmin) {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxSmallBodyBytes)
 	var req struct {
 		ID          string       `json:"id"`
 		CurrentTask string       `json:"current_task"`
 		Status      WorkerStatus `json:"status"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" || !validWorkerStatus(req.Status) {
 		http.Error(w, `{"error":"invalid heartbeat payload"}`, http.StatusBadRequest)
 		return
 	}
@@ -737,28 +767,28 @@ func (s *Server) handleHeartbeatWorker(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePollWorker(w http.ResponseWriter, r *http.Request) {
-	if !s.requireRole(w, r, RoleViewer) {
+	if !s.requireRole(w, r, RoleAdmin) {
 		return
 	}
-	var tags []string
+	var tags, targetNames []string
 	tagsParam := r.URL.Query().Get("tags")
 	if tagsParam != "" {
-		for _, t := range strings.Split(tagsParam, ",") {
-			if trimmed := strings.TrimSpace(t); trimmed != "" {
-				tags = append(tags, trimmed)
-			}
-		}
+		tags = splitCSVParam(tagsParam)
+		targetNames = splitCSVParam(r.URL.Query().Get("targets"))
 	} else if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxSmallBodyBytes)
 		var req struct {
 			WorkerID string   `json:"worker_id"`
 			Tags     []string `json:"tags"`
+			Targets  []string `json:"targets"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
 			tags = req.Tags
+			targetNames = req.Targets
 		}
 	}
 
-	target, hasTask := s.store.ClaimPendingTarget(tags)
+	target, hasTask := s.store.ClaimPendingTarget(tags, targetNames)
 	w.Header().Set("Content-Type", "application/json")
 	resp := WorkerPollResponse{
 		HasTask: hasTask,
@@ -768,4 +798,29 @@ func (s *Server) handlePollWorker(w http.ResponseWriter, r *http.Request) {
 		resp.TargetName = target.Name
 	}
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+const (
+	// maxSmallBodyBytes caps auth and worker control payloads.
+	maxSmallBodyBytes = 64 * 1024
+	// maxDailyMetricsDays caps /api/v1/metrics/daily?days=N.
+	maxDailyMetricsDays = 366
+)
+
+func validWorkerStatus(st WorkerStatus) bool {
+	switch st {
+	case "", WorkerStatusOnline, WorkerStatusBusy, WorkerStatusOffline:
+		return true
+	}
+	return false
+}
+
+func splitCSVParam(v string) []string {
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }

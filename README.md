@@ -899,6 +899,16 @@ go build -o lazarus-server ./cmd/server
 - `-alert-format`: 逾期告警訊息格式（預設 `slack`，支援 `slack`、`discord`、`teams`、`generic`，亦可透過環境變數 `ALERT_FORMAT` 設定）
 - `-alert-interval`: 逾期檢查間隔（預設 `10m`，亦可透過環境變數 `ALERT_INTERVAL` 設定）
 
+端點權限矩陣（任一金鑰有設定時生效；完全未設定金鑰則所有請求視為 admin，維持向下相容）：
+
+| 端點 | 匿名 | viewer | admin |
+|------|:---:|:---:|:---:|
+| `/healthz`、`/readyz`、`/metrics`、`/`（頁面本身）、`/api/v1/auth/*` | ✅ | ✅ | ✅ |
+| `GET /api/v1/targets`、`reports`、`summary`、`metrics/daily`、`stream`、`workers`、`export/csv`、`export/certificate.pdf` | ❌ 401 | ✅ | ✅ |
+| `POST /api/v1/reports`（回報演練結果）、`/api/v1/workers/register\|heartbeat\|poll`、`trigger`、`mute`/`unmute` | ❌ 401 | ❌ 403 | ✅ |
+
+> 回報演練結果是稽核證據，因此 CLI 的 `LAZARUS_API_KEY` 與 Worker 的 `--worker-token` 都必須使用 **admin** 金鑰。瀏覽器下載 CSV/PDF 與 SSE 無法帶 header，Web 控制台會改以 `?api_key=` 查詢參數附帶 Token。
+
 ### 分散式 Worker 邊緣節點模式啟動 (Worker Mode)
 
 當備份檔案座落於多個獨立 VPC、專用隔離環境或邊緣機房時，可將 Lazarus CLI 以分散式 Worker 模式啟動，自動向 Control Plane 註冊並輪詢認領手動或排程觸發的演練任務：
@@ -907,6 +917,11 @@ go build -o lazarus-server ./cmd/server
 # 啟動分散式 Worker（自動註冊、發送心跳並輪詢待執行的演練任務）
 ./lazarus --worker --control-plane "http://control-plane.internal:8080" --worker-token "your-admin-key" --interval 5s
 ```
+
+- `--worker-token` 未指定時會沿用 `notify.api_key` / `LAZARUS_API_KEY`。
+- Worker 只會認領**自己設定檔內存在**的 target（輪詢時會送出 target 名稱清單），不會吃掉別台 Worker 才能執行的任務。
+- 心跳在背景執行，長時間演練期間也不會被判定離線；Control Plane 重啟後 Worker 會在下一次心跳自動重新註冊。
+- `--worker` 與 `--daemon` 互斥。
 
 ### 將 Lazarus 演練回報至 Control Plane (Webhook 模式)
 

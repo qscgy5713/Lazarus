@@ -624,3 +624,43 @@ func TestDashboardURLButtons(t *testing.T) {
 		t.Errorf("expected dashboard OpenUri action in Teams payload with URI %q, got %+v", dashURL, teamsWithBtn.PotentialAction)
 	}
 }
+
+// The control plane's RPO, profiling and remediation views read these keys
+// from the "lazarus" payload; they used to be dropped entirely.
+func TestLazarusPayloadCarriesControlPlaneFields(t *testing.T) {
+	r := verify.Result{
+		Target: "orders", Passed: false, Stage: verify.StageChecks,
+		PeakMemoryBytes: 1024, DiskFootprintBytes: 2048,
+		IncrementalPatchesApplied: []string{"p1.sql"},
+		HasRPOCheck:               true, MaxRPOLag: 90 * time.Second, RPOViolated: true,
+		Remediation: &verify.RemediationResult{Triggered: true, Command: "fix.sh", Duration: 1500 * time.Millisecond},
+		Checks:      []check.Result{{Name: "fresh", IsRPOCheck: true, RPOLag: 90 * time.Second}},
+	}
+	b, err := New("http://x", FormatLazarus, WhenAlways).buildPayload([]verify.Result{r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Failed  int              `json:"failed"`
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Failed != 1 {
+		t.Errorf("failed = %d, want 1 (counted by verdict, not only by Err)", got.Failed)
+	}
+	res := got.Results[0]
+	for _, k := range []string{"peak_memory_bytes", "disk_footprint_bytes", "incremental_patches_applied", "has_rpo_check", "max_rpo_lag_seconds", "rpo_violated", "remediation"} {
+		if _, ok := res[k]; !ok {
+			t.Errorf("payload missing %q", k)
+		}
+	}
+	if rem := res["remediation"].(map[string]any); rem["duration_ms"].(float64) != 1500 {
+		t.Errorf("remediation duration_ms = %v, want 1500", rem["duration_ms"])
+	}
+	chk := res["checks"].([]any)[0].(map[string]any)
+	if chk["is_rpo_check"] != true || chk["rpo_lag_seconds"].(float64) != 90 {
+		t.Errorf("check RPO fields = %v", chk)
+	}
+}

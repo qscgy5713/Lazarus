@@ -21,8 +21,8 @@ const (
 	// EngineSQLite needs no sandbox container: a SQLite backup is already a
 	// complete, self-contained database file, so verifying it is just
 	// copying that file somewhere disposable and querying it directly.
-	EngineSQLite Engine = "sqlite"
-	EngineRedis  Engine = "redis"
+	EngineSQLite  Engine = "sqlite"
+	EngineRedis   Engine = "redis"
 	EngineMongoDB Engine = "mongodb"
 )
 
@@ -294,17 +294,17 @@ type SizeDrift struct {
 // the expectations should be set; a query returning a single numeric value is
 // compared against it.
 type Check struct {
-	Name    string `yaml:"name"`
-	SQL     string `yaml:"sql"`
-	Command string `yaml:"command"`
-	Min        *int64 `yaml:"expect_min"`
-	Max        *int64 `yaml:"expect_max"`
-	Equal        *int64  `yaml:"expect_equal"`
-	ExpectString *string       `yaml:"expect_string"`     // exact string match (ideal for checksums / hashes)
-	Pattern      string        `yaml:"expect_pattern"`    // regex that the output must match
-	NotPattern   string        `yaml:"expect_not_pattern"`// regex that the output must NOT match
-	MaxRPO       time.Duration `yaml:"max_rpo"`           // maximum acceptable data lag (e.g. "1h", "24h")
-	MaxLag       time.Duration `yaml:"max_lag"`           // alias for max_rpo
+	Name         string        `yaml:"name"`
+	SQL          string        `yaml:"sql"`
+	Command      string        `yaml:"command"`
+	Min          *int64        `yaml:"expect_min"`
+	Max          *int64        `yaml:"expect_max"`
+	Equal        *int64        `yaml:"expect_equal"`
+	ExpectString *string       `yaml:"expect_string"`      // exact string match (ideal for checksums / hashes)
+	Pattern      string        `yaml:"expect_pattern"`     // regex that the output must match
+	NotPattern   string        `yaml:"expect_not_pattern"` // regex that the output must NOT match
+	MaxRPO       time.Duration `yaml:"max_rpo"`            // maximum acceptable data lag (e.g. "1h", "24h")
+	MaxLag       time.Duration `yaml:"max_lag"`            // alias for max_rpo
 }
 
 const (

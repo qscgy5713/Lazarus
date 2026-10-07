@@ -15,19 +15,19 @@ type InboundReport struct {
 }
 
 type InboundResult struct {
-	Target            string         `json:"target"`
-	Tags              []string       `json:"tags,omitempty"`
-	Passed            bool           `json:"passed"`
-	Stage             string         `json:"stage"`
-	Error             string         `json:"error,omitempty"`
-	BackupPath        string         `json:"backup_path,omitempty"`
-	BackupSize        int64          `json:"backup_size,omitempty"`
-	BackupSizeHuman   string         `json:"backup_size_human,omitempty"`
-	BackupAge         string         `json:"backup_age,omitempty"`
-	DurationMs        int64          `json:"duration_ms"`
-	RestoreDurationMs int64          `json:"restore_duration_ms,omitempty"`
-	SLARTOMs          int64          `json:"sla_rto_ms,omitempty"`
-	Checks            []InboundCheck `json:"checks,omitempty"`
+	Target                    string             `json:"target"`
+	Tags                      []string           `json:"tags,omitempty"`
+	Passed                    bool               `json:"passed"`
+	Stage                     string             `json:"stage"`
+	Error                     string             `json:"error,omitempty"`
+	BackupPath                string             `json:"backup_path,omitempty"`
+	BackupSize                int64              `json:"backup_size,omitempty"`
+	BackupSizeHuman           string             `json:"backup_size_human,omitempty"`
+	BackupAge                 string             `json:"backup_age,omitempty"`
+	DurationMs                int64              `json:"duration_ms"`
+	RestoreDurationMs         int64              `json:"restore_duration_ms,omitempty"`
+	SLARTOMs                  int64              `json:"sla_rto_ms,omitempty"`
+	Checks                    []InboundCheck     `json:"checks,omitempty"`
 	DebugHint                 string             `json:"debug_hint,omitempty"`
 	LogsTail                  string             `json:"logs_tail,omitempty"`
 	PeakMemoryBytes           int64              `json:"peak_memory_bytes,omitempty"`
@@ -70,27 +70,27 @@ const (
 
 // TargetRecord represents a tracked database target and its most recent drill result.
 type TargetRecord struct {
-	Name           string          `json:"name"`
-	Tags           []string        `json:"tags,omitempty"`
-	Status         TargetStatus    `json:"status"`
-	Muted          bool            `json:"muted"`
-	TriggerPending bool            `json:"trigger_pending,omitempty"`
-	LastPassed     bool            `json:"last_passed"`
-	LastDrilledAt  time.Time       `json:"last_drilled_at"`
-	LastHostname   string          `json:"last_hostname,omitempty"`
-	LastStage      string          `json:"last_stage,omitempty"`
-	LastError      string          `json:"last_error,omitempty"`
-	LastBackupPath string          `json:"last_backup_path,omitempty"`
-	LastBackupSize string          `json:"last_backup_size,omitempty"`
-	LastBackupAge  string          `json:"last_backup_age,omitempty"`
-	LastDurationMs int64           `json:"last_duration_ms"`
-	LastRestoreMs  int64           `json:"last_restore_ms"`
-	LastLogsTail   string          `json:"last_logs_tail,omitempty"`
-	SLARTO         string          `json:"sla_rto,omitempty"`
-	SLARTOMs       int64           `json:"sla_rto_ms,omitempty"`
+	Name           string       `json:"name"`
+	Tags           []string     `json:"tags,omitempty"`
+	Status         TargetStatus `json:"status"`
+	Muted          bool         `json:"muted"`
+	TriggerPending bool         `json:"trigger_pending,omitempty"`
+	LastPassed     bool         `json:"last_passed"`
+	LastDrilledAt  time.Time    `json:"last_drilled_at"`
+	LastHostname   string       `json:"last_hostname,omitempty"`
+	LastStage      string       `json:"last_stage,omitempty"`
+	LastError      string       `json:"last_error,omitempty"`
+	LastBackupPath string       `json:"last_backup_path,omitempty"`
+	LastBackupSize string       `json:"last_backup_size,omitempty"`
+	LastBackupAge  string       `json:"last_backup_age,omitempty"`
+	LastDurationMs int64        `json:"last_duration_ms"`
+	LastRestoreMs  int64        `json:"last_restore_ms"`
+	LastLogsTail   string       `json:"last_logs_tail,omitempty"`
+	SLARTO         string       `json:"sla_rto,omitempty"`
+	SLARTOMs       int64        `json:"sla_rto_ms,omitempty"`
 	// SLAPassed is derived when targets are listed (never persisted as a
 	// stale verdict): healthy now AND last restore within the RTO, if set.
-	SLAPassed bool `json:"sla_passed"`
+	SLAPassed                 bool               `json:"sla_passed"`
 	LastChecks                []InboundCheck     `json:"last_checks,omitempty"`
 	PeakMemoryBytes           int64              `json:"peak_memory_bytes,omitempty"`
 	DiskFootprintBytes        int64              `json:"disk_footprint_bytes,omitempty"`

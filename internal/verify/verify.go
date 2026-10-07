@@ -333,6 +333,11 @@ func RunWithProgress(ctx context.Context, target config.Target, baseline int64, 
 			result.PeakMemoryBytes = fbResult.PeakMemoryBytes
 			result.DiskFootprintBytes = fbResult.DiskFootprintBytes
 			result.IncrementalPatchesApplied = fbResult.IncrementalPatchesApplied
+			// The primary attempt may have set these before failing; the
+			// verdict now belongs to the fallback backup.
+			result.HasRPOCheck = fbResult.HasRPOCheck
+			result.MaxRPOLag = fbResult.MaxRPOLag
+			result.RPOViolated = fbResult.RPOViolated
 			result.FallbackUsed = true
 			result.FallbackBackup = fallbackFile
 			result.FallbackRPO = file.ModTime.Sub(fallbackFile.ModTime)
@@ -600,7 +605,11 @@ func querySandbox(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine
 	default:
 		return "", fmt.Errorf("unsupported engine for schema inspection: %s", engine)
 	}
-	return sb.Exec(ctx, "", args...)
+	out, err := sb.Exec(ctx, "", args...)
+	if engine == config.EngineMySQL {
+		out = check.StripMySQLPasswordWarning(out)
+	}
+	return out, err
 }
 
 func runHook(ctx context.Context, cmdStr string, timeout time.Duration, env map[string]string) error {

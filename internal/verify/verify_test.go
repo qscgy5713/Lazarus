@@ -850,3 +850,46 @@ func TestRunRemediationOnFailure(t *testing.T) {
 		t.Errorf("expected remediation script to execute and write to flagFile, got: %s (err: %v)", string(data), err)
 	}
 }
+
+// The primary attempt can record an RPO violation before failing; once the
+// fallback backup passes, the reported RPO verdict must be the fallback's.
+func TestFallbackSuccessReplacesPrimaryRPOVerdict(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+
+	mk := func(name string, recordAt time.Time, mtime time.Time) {
+		path := filepath.Join(dir, name)
+		sql := fmt.Sprintf("CREATE TABLE events (ts INTEGER); INSERT INTO events VALUES (%d);", recordAt.Unix())
+		if out, err := exec.Command("sqlite3", path, sql).CombinedOutput(); err != nil {
+			t.Fatalf("sqlite3: %v: %s", err, out)
+		}
+		if err := os.Chtimes(path, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	mk("b_old.db", now.Add(-5*time.Minute), now.Add(-time.Hour)) // fresh data
+	mk("b_new.db", now.Add(-48*time.Hour), now)                  // stale data: RPO violated
+
+	target := config.Target{
+		Name:              "rpo-fallback",
+		Engine:            config.EngineSQLite,
+		Path:              filepath.Join(dir, "b_*.db"),
+		FallbackOnFailure: true,
+		MaxFallbackDepth:  1,
+		Checks: []config.Check{
+			{Name: "fresh", SQL: "SELECT max(ts) FROM events", MaxRPO: time.Hour},
+		},
+	}
+
+	res := Run(context.Background(), target, 0, false, false, "")
+	if !res.Passed || !res.FallbackUsed {
+		t.Fatalf("expected pass via fallback, got passed=%v fallback=%v err=%v", res.Passed, res.FallbackUsed, res.Err)
+	}
+	if res.RPOViolated {
+		t.Error("RPOViolated carried over from the failed primary attempt")
+	}
+	if !res.HasRPOCheck || res.MaxRPOLag > time.Hour {
+		t.Errorf("RPO verdict = has=%v lag=%v, want the fallback's (~5m)", res.HasRPOCheck, res.MaxRPOLag)
+	}
+}
