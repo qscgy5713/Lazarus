@@ -11,11 +11,70 @@
       #auditModalContent, #auditModalContent * { visibility: visible; }
       #auditModalContent { position: absolute; left: 0; top: 0; width: 100%; }
     }
+    /* Light Theme Overrides */
+    body.theme-light {
+      background-color: #f8fafc;
+      color: #0f172a;
+    }
+    body.theme-light header {
+      background-color: rgba(255, 255, 255, 0.85);
+      border-color: #e2e8f0;
+    }
+    body.theme-light .bg-slate-950,
+    body.theme-light .bg-slate-900,
+    body.theme-light .bg-slate-900\/80,
+    body.theme-light .bg-slate-900\/70,
+    body.theme-light .bg-slate-900\/60,
+    body.theme-light .bg-slate-900\/50,
+    body.theme-light .bg-slate-900\/40 {
+      background-color: #ffffff;
+      border-color: #e2e8f0;
+      color: #1e293b;
+    }
+    body.theme-light .bg-slate-950\/60,
+    body.theme-light .bg-slate-950\/80 {
+      background-color: #f1f5f9;
+      border-color: #cbd5e1;
+    }
+    body.theme-light .border-slate-800,
+    body.theme-light .border-slate-700,
+    body.theme-light .border-slate-800\/70,
+    body.theme-light .border-slate-800\/60,
+    body.theme-light .border-slate-800\/40 {
+      border-color: #e2e8f0;
+    }
+    body.theme-light .text-white {
+      color: #0f172a;
+    }
+    body.theme-light .text-slate-100 {
+      color: #1e293b;
+    }
+    body.theme-light .text-slate-200,
+    body.theme-light .text-slate-300 {
+      color: #334155;
+    }
+    body.theme-light .text-slate-400 {
+      color: #64748b;
+    }
+    body.theme-light input,
+    body.theme-light select {
+      background-color: #ffffff;
+      color: #0f172a;
+      border-color: #cbd5e1;
+    }
+    body.theme-light .bg-slate-800 {
+      background-color: #f1f5f9;
+      color: #334155;
+      border-color: #cbd5e1;
+    }
+    body.theme-light .bg-slate-800:hover {
+      background-color: #e2e8f0;
+    }
   </style>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen font-sans antialiased selection:bg-indigo-500 selection:text-white">
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans antialiased selection:bg-indigo-500 selection:text-white transition-colors duration-200">
   <!-- Top Navigation -->
-  <header class="border-b border-slate-800 bg-slate-900/60 backdrop-blur sticky top-0 z-40">
+  <header class="border-b border-slate-800 bg-slate-900/60 backdrop-blur sticky top-0 z-40 transition-colors duration-200">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
       <div class="flex items-center space-x-3">
         <div class="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center font-bold text-lg text-white shadow-lg shadow-indigo-500/30">
@@ -30,6 +89,10 @@
         </div>
       </div>
       <div class="flex items-center space-x-3">
+        <button id="themeToggleBtn" onclick="toggleTheme()" class="px-3 py-1.5 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 transition flex items-center space-x-1.5 shadow-sm" title="Toggle Light / Dark Mode">
+          <span id="themeIcon">☀️</span>
+          <span id="themeLabel">Light</span>
+        </button>
         <a id="exportCSVBtn" href="/api/v1/export/csv" download class="px-3.5 py-1.5 text-xs font-semibold bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 rounded-lg border border-emerald-800/60 transition flex items-center space-x-1.5 shadow-sm">
           <span>📥</span>
           <span>Export CSV</span>
@@ -676,6 +739,17 @@
               '<span class="text-slate-500 block text-[10px] uppercase font-semibold">Backup Size</span>' +
               '<span class="font-mono text-slate-200">' + (t.last_backup_size ? escapeHtml(t.last_backup_size) : 'N/A') + '</span>' +
             '</div>' +
+            (t.peak_memory_bytes || t.disk_footprint_bytes ? (
+              '<div class="col-span-2 flex justify-between items-center text-[11px] pt-1 border-t border-slate-800/50">' +
+                '<span class="text-slate-400">📊 Sandbox: RAM Peak <strong class="text-slate-200 font-mono">' + (t.peak_memory_bytes ? formatBytes(t.peak_memory_bytes) : 'N/A') + '</strong> &bull; Disk <strong class="text-slate-200 font-mono">' + (t.disk_footprint_bytes ? formatBytes(t.disk_footprint_bytes) : 'N/A') + '</strong></span>' +
+              '</div>'
+            ) : '') +
+            (t.incremental_patches_applied && t.incremental_patches_applied.length > 0 ? (
+              '<div class="col-span-2 text-[10px] text-indigo-400 font-mono bg-indigo-950/30 px-2 py-0.5 rounded border border-indigo-900/40">🧩 Replayed ' + t.incremental_patches_applied.length + ' incremental patches</div>'
+            ) : '') +
+            (t.remediation && t.remediation.triggered ? (
+              '<div class="col-span-2 text-[10px] ' + (t.remediation.success ? 'text-emerald-400 bg-emerald-950/30 border-emerald-900/40' : 'text-rose-400 bg-rose-950/30 border-rose-900/40') + ' font-mono px-2 py-0.5 rounded border">🚨 Remediation: ' + escapeHtml(t.remediation.command) + ' (' + (t.remediation.success ? 'SUCCESS' : 'FAILED') + ')</div>'
+            ) : '') +
             '<div class="col-span-2 truncate">' +
               '<span class="text-slate-500 block text-[10px] uppercase font-semibold">Backup Source</span>' +
               '<span class="font-mono text-slate-300 text-[11px] truncate block" title="' + safeBackupPath + '">' + backupSourceDisplay + '</span>' +
@@ -947,6 +1021,40 @@
       };
     }
 
+    // Light / Dark Theme Management
+    function initTheme() {
+      const saved = localStorage.getItem('lazarus_theme');
+      const isLight = saved === 'light';
+      if (isLight) {
+        document.body.classList.add('theme-light');
+      } else {
+        document.body.classList.remove('theme-light');
+      }
+      updateThemeUI(isLight);
+    }
+
+    function toggleTheme() {
+      const isLight = document.body.classList.toggle('theme-light');
+      localStorage.setItem('lazarus_theme', isLight ? 'light' : 'dark');
+      updateThemeUI(isLight);
+    }
+
+    function updateThemeUI(isLight) {
+      const icon = document.getElementById('themeIcon');
+      const label = document.getElementById('themeLabel');
+      if (icon) icon.innerText = isLight ? '🌙' : '☀️';
+      if (label) label.innerText = isLight ? 'Dark' : 'Light';
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes || bytes <= 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    initTheme();
     fetchData();
     initSSE();
     setInterval(fetchData, 30000);

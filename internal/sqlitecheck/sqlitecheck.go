@@ -20,12 +20,14 @@ import (
 )
 
 // Prepare copies file into a throwaway temp file — decrypting it first if
-// it's GPG-encrypted, then decompressing if it's gzipped (that order,
-// matching the real-world convention of compressing a dump and only then
-// encrypting it) — and returns that copy's path. The caller must run the
-// returned cleanup func once done with it. gpgPassphrase is only used when
-// file.Encrypted; ignored otherwise.
+// it's GPG/AGE-encrypted, then decompressing if it's compressed — and returns
+// that copy's path.
 func Prepare(ctx context.Context, file *backup.File, gpgPassphrase string) (string, func(), error) {
+	return PrepareWithOptions(ctx, file, gpgPassphrase, "")
+}
+
+// PrepareWithOptions extracts and decrypts a SQLite backup using GPG or Age identity.
+func PrepareWithOptions(ctx context.Context, file *backup.File, gpgPassphrase, ageIdentity string) (string, func(), error) {
 	srcPath := file.Path
 	var cleanups []func()
 	cleanupAll := func() {
@@ -35,7 +37,7 @@ func Prepare(ctx context.Context, file *backup.File, gpgPassphrase string) (stri
 	}
 
 	if file.Encrypted {
-		decryptedPath, cleanup, err := decrypt.Decrypt(ctx, srcPath, gpgPassphrase)
+		decryptedPath, cleanup, err := decrypt.DecryptWithOptions(ctx, srcPath, gpgPassphrase, ageIdentity)
 		if err != nil {
 			return "", nil, err
 		}

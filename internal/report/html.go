@@ -206,6 +206,7 @@ func HTML(w io.Writer, results []verify.Result, reportTitle string) error {
             <th>Total Time</th>
             <th>Restore Time</th>
             <th>Backup Size</th>
+            <th>RAM / Disk</th>
             <th>Checks</th>
           </tr>
         </thead>
@@ -251,6 +252,18 @@ func HTML(w io.Writer, results []verify.Result, reportTitle string) error {
 		if r.Backup != nil {
 			backupSize = backup.HumanSize(r.Backup.Size)
 		}
+		resourceStr := "-"
+		if r.PeakMemoryBytes > 0 || r.DiskFootprintBytes > 0 {
+			ram := "-"
+			if r.PeakMemoryBytes > 0 {
+				ram = backup.HumanSize(r.PeakMemoryBytes)
+			}
+			disk := "-"
+			if r.DiskFootprintBytes > 0 {
+				disk = backup.HumanSize(r.DiskFootprintBytes)
+			}
+			resourceStr = fmt.Sprintf("%s / %s", ram, disk)
+		}
 		checksPassed := 0
 		for _, c := range r.Checks {
 			if c.Passed {
@@ -270,6 +283,7 @@ func HTML(w io.Writer, results []verify.Result, reportTitle string) error {
             <td>%s</td>
             <td>%s</td>
             <td>%s</td>
+            <td>%s</td>
           </tr>
 `,
 			html.EscapeString(r.Target),
@@ -278,6 +292,7 @@ func HTML(w io.Writer, results []verify.Result, reportTitle string) error {
 			r.Duration.Round(time.Millisecond).String(),
 			restoreStr,
 			backupSize,
+			resourceStr,
 			checksStr,
 		)
 	}
@@ -352,6 +367,41 @@ func HTML(w io.Writer, results []verify.Result, reportTitle string) error {
         </p>
 `, r.SchemaDrift.TotalTables)
 			}
+		}
+
+		if r.PeakMemoryBytes > 0 || r.DiskFootprintBytes > 0 {
+			ram := "-"
+			if r.PeakMemoryBytes > 0 {
+				ram = backup.HumanSize(r.PeakMemoryBytes)
+			}
+			disk := "-"
+			if r.DiskFootprintBytes > 0 {
+				disk = backup.HumanSize(r.DiskFootprintBytes)
+			}
+			fmt.Fprintf(w, `        <p style="font-size: 12px; color: #94a3b8; margin-bottom: 8px;">
+          📊 Sandbox Footprint: <strong>RAM Peak:</strong> %s &bull; <strong>Disk Footprint:</strong> %s
+        </p>
+`, ram, disk)
+		}
+
+		if len(r.IncrementalPatchesApplied) > 0 {
+			fmt.Fprintf(w, `        <div class="alert-box alert-info">
+          <strong>🧩 Incremental Replay Chain:</strong> Replayed %d patch(es) in chronological order: <code>%s</code>
+        </div>
+`, len(r.IncrementalPatchesApplied), html.EscapeString(strings.Join(r.IncrementalPatchesApplied, ", ")))
+		}
+
+		if r.Remediation != nil && r.Remediation.Triggered {
+			remClass := "alert-info"
+			remStatus := "SUCCESS"
+			if !r.Remediation.Success {
+				remClass = "alert-warn"
+				remStatus = "FAILED"
+			}
+			fmt.Fprintf(w, `        <div class="alert-box %s">
+          <strong>🚨 Incident Remediation Playbook:</strong> <code>%s</code> (Status: %s, Duration: %s)
+        </div>
+`, remClass, html.EscapeString(r.Remediation.Command), remStatus, r.Remediation.Duration.Round(time.Millisecond))
 		}
 
 		if len(r.Checks) > 0 {

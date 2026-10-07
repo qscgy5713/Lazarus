@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"lazarus/internal/backup"
@@ -16,17 +17,29 @@ import (
 	"lazarus/internal/sandbox"
 )
 
+// Options configures decryption keys and credentials for restore and patch replay.
+type Options struct {
+	GPGPassphrase string
+	AgeIdentity   string
+}
+
 // Run streams file into the sandbox and returns the restore output. A
 // non-nil error means the backup could not be restored — which is the whole
 // finding this tool exists to produce. gpgPassphrase is only used when
 // file.Encrypted; ignored otherwise.
 func Run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, file *backup.File, gpgPassphrase string) (string, error) {
+	return RunWithOptions(ctx, sb, engine, file, Options{GPGPassphrase: gpgPassphrase})
+}
+
+// RunWithOptions streams file into the sandbox using the provided options,
+// supporting both GPG and AGE cryptographic envelopes.
+func RunWithOptions(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, file *backup.File, opts Options) (string, error) {
 	// If the backup file is encrypted, decrypt it once up-front so that
 	// scanning roles and streaming into the sandbox share the same
-	// decrypted file rather than running expensive GPG decryption twice.
+	// decrypted file rather than running expensive decryption twice.
 	workFile := file
 	if file.Encrypted {
-		decryptedPath, cleanupDecrypt, err := decrypt.Decrypt(ctx, file.Path, gpgPassphrase)
+		decryptedPath, cleanupDecrypt, err := decrypt.DecryptWithOptions(ctx, file.Path, opts.GPGPassphrase, opts.AgeIdentity)
 		if err != nil {
 			return "", err
 		}
@@ -42,7 +55,7 @@ func Run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, file *b
 	// database; create them first so a missing role doesn't fail a backup
 	// that's actually fine. pg_restore handles this itself via --no-owner.
 	if engine == config.EnginePostgres && workFile.Format == backup.FormatPlainSQL {
-		scanReader, scanCloser, err := open(ctx, workFile, "")
+		scanReader, scanCloser, err := open(ctx, workFile, opts)
 		if err != nil {
 			return "", err
 		}
@@ -54,7 +67,7 @@ func Run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, file *b
 		}
 	}
 
-	reader, closer, err := open(ctx, workFile, "")
+	reader, closer, err := open(ctx, workFile, opts)
 	if err != nil {
 		return "", err
 	}
@@ -85,11 +98,73 @@ func Run(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, file *b
 	return output, nil
 }
 
+// ApplyPatch replays an incremental or differential backup patch into an active sandbox.
+func ApplyPatch(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, patchFile *backup.File, opts Options) (string, error) {
+	reader, closer, err := open(ctx, patchFile, opts)
+	if err != nil {
+		return "", fmt.Errorf("open incremental patch %s: %w", filepath.Base(patchFile.Path), err)
+	}
+	defer closer()
+
+	var args []string
+	switch engine {
+	case config.EnginePostgres:
+		if patchFile.Format == backup.FormatPostgresCustom {
+			args = []string{
+				"pg_restore",
+				"--username", sandbox.User(),
+				"--dbname", sandbox.DBName(),
+				"--no-owner", "--no-privileges",
+				"--exit-on-error",
+			}
+		} else {
+			args = []string{
+				"psql",
+				"--username", sandbox.User(),
+				"--dbname", sandbox.DBName(),
+				"--set", "ON_ERROR_STOP=1",
+				"--quiet",
+			}
+		}
+	case config.EngineMySQL:
+		args = []string{
+			"mysql",
+			"--user=root",
+			"--password=" + sandbox.Password(),
+			sandbox.DBName(),
+		}
+	case config.EngineRedis:
+		args = []string{"redis-cli", "--pipe"}
+	case config.EngineMongoDB:
+		args = []string{
+			"mongorestore",
+			"--username=" + sandbox.User(),
+			"--password=" + sandbox.Password(),
+			"--authenticationDatabase=admin",
+			"--archive",
+		}
+	default:
+		return "", fmt.Errorf("incremental patch replay not supported for %s", engine)
+	}
+
+	full := append([]string{"exec", "--interactive", sb.Name}, args...)
+	cmd := exec.CommandContext(ctx, "docker", full...)
+	cmd.Stdin = reader
+
+	out, err := cmd.CombinedOutput()
+	output := strings.TrimSpace(string(out))
+	if err != nil {
+		return output, fmt.Errorf("incremental patch replay failed: %w: %s", err, output)
+	}
+	if problem := findErrorLine(output); problem != "" {
+		return output, fmt.Errorf("incremental patch reported errors: %s", problem)
+	}
+	return output, nil
+}
+
 // open returns a reader over file's plaintext, uncompressed content —
-// decrypting (if file.Encrypted) and decompressing (if file.Compressed), in
-// that order, since the real-world convention is to compress a dump and
-// only then encrypt it, never the other way around.
-func open(ctx context.Context, file *backup.File, gpgPassphrase string) (io.Reader, func(), error) {
+// decrypting (if file.Encrypted) and decompressing (if file.Compressed).
+func open(ctx context.Context, file *backup.File, opts Options) (io.Reader, func(), error) {
 	path := file.Path
 	var cleanups []func()
 	cleanupAll := func() {
@@ -99,7 +174,7 @@ func open(ctx context.Context, file *backup.File, gpgPassphrase string) (io.Read
 	}
 
 	if file.Encrypted {
-		decryptedPath, cleanup, err := decrypt.Decrypt(ctx, path, gpgPassphrase)
+		decryptedPath, cleanup, err := decrypt.DecryptWithOptions(ctx, path, opts.GPGPassphrase, opts.AgeIdentity)
 		if err != nil {
 			return nil, nil, err
 		}

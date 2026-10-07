@@ -51,6 +51,28 @@ func Text(w io.Writer, results []verify.Result, quiet bool) bool {
 		if r.RestoreDuration > 0 {
 			fmt.Fprintf(w, "      restore took: %s\n", r.RestoreDuration.Round(time.Millisecond))
 		}
+		if len(r.IncrementalPatchesApplied) > 0 {
+			fmt.Fprintf(w, "      incremental patches: applied %d patch(es) %v\n", len(r.IncrementalPatchesApplied), r.IncrementalPatchesApplied)
+		}
+		if r.PeakMemoryBytes > 0 || r.DiskFootprintBytes > 0 {
+			ramStr := "-"
+			if r.PeakMemoryBytes > 0 {
+				ramStr = backup.HumanSize(r.PeakMemoryBytes)
+			}
+			diskStr := "-"
+			if r.DiskFootprintBytes > 0 {
+				diskStr = backup.HumanSize(r.DiskFootprintBytes)
+			}
+			fmt.Fprintf(w, "      sandbox resources: RAM Peak: %s | Disk Footprint: %s\n", ramStr, diskStr)
+		}
+		if r.Remediation != nil && r.Remediation.Triggered {
+			status := "SUCCESS"
+			if !r.Remediation.Success {
+				status = "FAILED"
+			}
+			fmt.Fprintf(w, "      remediation playbook: %s (status: %s, duration: %s)\n",
+				r.Remediation.Command, status, r.Remediation.Duration.Round(time.Millisecond))
+		}
 		if r.FallbackUsed {
 			fmt.Fprintf(w, "      fallback: %s\n", r.FallbackMessage)
 		}
@@ -111,9 +133,13 @@ type jsonResult struct {
 	ChaosInjected       bool        `json:"chaos_injected,omitempty"`
 	ChaosPassed         bool        `json:"chaos_passed,omitempty"`
 	ChaosMessage        string      `json:"chaos_message,omitempty"`
-	SchemaTotalTables   int         `json:"schema_total_tables,omitempty"`
-	SchemaMissingTables []string    `json:"schema_missing_tables,omitempty"`
-	SchemaEmptyTables   []string    `json:"schema_empty_tables,omitempty"`
+	SchemaTotalTables         int                      `json:"schema_total_tables,omitempty"`
+	SchemaMissingTables       []string                 `json:"schema_missing_tables,omitempty"`
+	SchemaEmptyTables         []string                 `json:"schema_empty_tables,omitempty"`
+	PeakMemoryBytes           int64                    `json:"peak_memory_bytes,omitempty"`
+	DiskFootprintBytes        int64                    `json:"disk_footprint_bytes,omitempty"`
+	IncrementalPatchesApplied []string                 `json:"incremental_patches_applied,omitempty"`
+	Remediation               *verify.RemediationResult `json:"remediation,omitempty"`
 }
 
 type jsonCheck struct {
@@ -134,12 +160,16 @@ func JSON(w io.Writer, results []verify.Result) bool {
 		}
 
 		jr := jsonResult{
-			Target:            r.Target,
-			Passed:            r.Passed,
-			Stage:             string(r.Stage),
-			DurationMs:        r.Duration.Milliseconds(),
-			RestoreDurationMs: r.RestoreDuration.Milliseconds(),
-			DebugHint:         r.DebugHint,
+			Target:                    r.Target,
+			Passed:                    r.Passed,
+			Stage:                     string(r.Stage),
+			DurationMs:                r.Duration.Milliseconds(),
+			RestoreDurationMs:         r.RestoreDuration.Milliseconds(),
+			DebugHint:                 r.DebugHint,
+			PeakMemoryBytes:           r.PeakMemoryBytes,
+			DiskFootprintBytes:        r.DiskFootprintBytes,
+			IncrementalPatchesApplied: r.IncrementalPatchesApplied,
+			Remediation:               r.Remediation,
 		}
 		if r.Err != nil {
 			jr.Error = r.Err.Error()
@@ -208,8 +238,8 @@ func StepSummary(w io.Writer, results []verify.Result) error {
 		fmt.Fprintf(w, "> **Result**: :x: **DRILLS FAILED** (%d passed, %d failed out of %d targets)\n\n", passed, failed, total)
 	}
 
-	fmt.Fprintf(w, "| Target | Status | Stage | Duration | Restore Time | Backup Size | Checks |\n")
-	fmt.Fprintf(w, "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |\n")
+	fmt.Fprintf(w, "| Target | Status | Stage | Duration | Restore Time | Backup Size | RAM / Disk | Checks |\n")
+	fmt.Fprintf(w, "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
 	for _, r := range results {
 		status := "✅ PASS"
@@ -227,6 +257,18 @@ func StepSummary(w io.Writer, results []verify.Result) error {
 		if r.Backup != nil {
 			backupSize = backup.HumanSize(r.Backup.Size)
 		}
+		resourceStr := "-"
+		if r.PeakMemoryBytes > 0 || r.DiskFootprintBytes > 0 {
+			ram := "-"
+			if r.PeakMemoryBytes > 0 {
+				ram = backup.HumanSize(r.PeakMemoryBytes)
+			}
+			disk := "-"
+			if r.DiskFootprintBytes > 0 {
+				disk = backup.HumanSize(r.DiskFootprintBytes)
+			}
+			resourceStr = fmt.Sprintf("%s / %s", ram, disk)
+		}
 		checksPassed := 0
 		for _, c := range r.Checks {
 			if c.Passed {
@@ -238,8 +280,8 @@ func StepSummary(w io.Writer, results []verify.Result) error {
 			checksStr = "none"
 		}
 
-		fmt.Fprintf(w, "| `%s` | %s | `%s` | %s | %s | %s | %s |\n",
-			r.Target, status, r.Stage, duration, restoreDuration, backupSize, checksStr)
+		fmt.Fprintf(w, "| `%s` | %s | `%s` | %s | %s | %s | %s | %s |\n",
+			r.Target, status, r.Stage, duration, restoreDuration, backupSize, resourceStr, checksStr)
 	}
 	fmt.Fprintln(w)
 
@@ -260,6 +302,29 @@ func StepSummary(w io.Writer, results []verify.Result) error {
 			fmt.Fprintf(w, "### 🔄 Fallback Recovery: `%s`\n\n", r.Target)
 			fmt.Fprintf(w, "> [!IMPORTANT]\n")
 			fmt.Fprintf(w, "> %s\n\n", r.FallbackMessage)
+		}
+
+		if len(r.IncrementalPatchesApplied) > 0 {
+			fmt.Fprintf(w, "### 🧩 Incremental Patches Chain Replayed: `%s`\n\n", r.Target)
+			fmt.Fprintf(w, "> Replayed **%d** patch(es) in chronological order: `%s`\n\n",
+				len(r.IncrementalPatchesApplied), strings.Join(r.IncrementalPatchesApplied, ", "))
+		}
+
+		if r.Remediation != nil && r.Remediation.Triggered {
+			remStatus := "✅ SUCCESS"
+			if !r.Remediation.Success {
+				remStatus = "❌ FAILED"
+			}
+			fmt.Fprintf(w, "### 🚨 Automated Incident Remediation Playbook: `%s`\n\n", r.Target)
+			fmt.Fprintf(w, "- **Command**: `%s`\n", r.Remediation.Command)
+			fmt.Fprintf(w, "- **Status**: %s (Duration: %s)\n", remStatus, r.Remediation.Duration.Round(time.Millisecond))
+			if r.Remediation.Output != "" {
+				fmt.Fprintf(w, "- **Output**:\n```text\n%s\n```\n", r.Remediation.Output)
+			}
+			if r.Remediation.Error != "" {
+				fmt.Fprintf(w, "- **Error**: `%s`\n", r.Remediation.Error)
+			}
+			fmt.Fprintln(w)
 		}
 
 		if r.SchemaDrift != nil && r.SchemaDrift.HasCriticalDrift {

@@ -28,8 +28,22 @@ type InboundResult struct {
 	RestoreDurationMs int64          `json:"restore_duration_ms,omitempty"`
 	SLARTOMs          int64          `json:"sla_rto_ms,omitempty"`
 	Checks            []InboundCheck `json:"checks,omitempty"`
-	DebugHint         string         `json:"debug_hint,omitempty"`
-	LogsTail          string         `json:"logs_tail,omitempty"`
+	DebugHint                 string             `json:"debug_hint,omitempty"`
+	LogsTail                  string             `json:"logs_tail,omitempty"`
+	PeakMemoryBytes           int64              `json:"peak_memory_bytes,omitempty"`
+	DiskFootprintBytes        int64              `json:"disk_footprint_bytes,omitempty"`
+	IncrementalPatchesApplied []string           `json:"incremental_patches_applied,omitempty"`
+	Remediation               *RemediationRecord `json:"remediation,omitempty"`
+}
+
+// RemediationRecord describes the outcome of an automated disaster recovery remediation playbook.
+type RemediationRecord struct {
+	Triggered  bool   `json:"triggered"`
+	Command    string `json:"command"`
+	Success    bool   `json:"success"`
+	Output     string `json:"output,omitempty"`
+	Error      string `json:"error,omitempty"`
+	DurationMs int64  `json:"duration_ms"`
 }
 
 type InboundCheck struct {
@@ -72,25 +86,33 @@ type TargetRecord struct {
 	// SLAPassed is derived when targets are listed (never persisted as a
 	// stale verdict): healthy now AND last restore within the RTO, if set.
 	SLAPassed bool `json:"sla_passed"`
-	LastChecks     []InboundCheck  `json:"last_checks,omitempty"`
-	RecentHistory  []HistoryRecord `json:"recent_history,omitempty"`
+	LastChecks                []InboundCheck     `json:"last_checks,omitempty"`
+	PeakMemoryBytes           int64              `json:"peak_memory_bytes,omitempty"`
+	DiskFootprintBytes        int64              `json:"disk_footprint_bytes,omitempty"`
+	IncrementalPatchesApplied []string           `json:"incremental_patches_applied,omitempty"`
+	Remediation               *RemediationRecord `json:"remediation,omitempty"`
+	RecentHistory             []HistoryRecord    `json:"recent_history,omitempty"`
 }
 
 type HistoryRecord struct {
-	Target        string    `json:"target,omitempty"`
-	Tags          []string  `json:"tags,omitempty"`
-	DrilledAt     time.Time `json:"drilled_at"`
-	Passed        bool      `json:"passed"`
-	Stage         string    `json:"stage,omitempty"`
-	BackupPath    string    `json:"backup_path,omitempty"`
-	BackupSize    string    `json:"backup_size,omitempty"`
-	RestoreMs     int64     `json:"restore_ms"`
-	TotalDuration int64     `json:"total_duration_ms"`
-	ChecksTotal   int       `json:"checks_total,omitempty"`
-	ChecksPassed  int       `json:"checks_passed,omitempty"`
-	ChecksFailed  int       `json:"checks_failed,omitempty"`
-	Error         string    `json:"error,omitempty"`
-	LogsTail      string    `json:"logs_tail,omitempty"`
+	Target                    string             `json:"target,omitempty"`
+	Tags                      []string           `json:"tags,omitempty"`
+	DrilledAt                 time.Time          `json:"drilled_at"`
+	Passed                    bool               `json:"passed"`
+	Stage                     string             `json:"stage,omitempty"`
+	BackupPath                string             `json:"backup_path,omitempty"`
+	BackupSize                string             `json:"backup_size,omitempty"`
+	RestoreMs                 int64              `json:"restore_ms"`
+	TotalDuration             int64              `json:"total_duration_ms"`
+	ChecksTotal               int                `json:"checks_total,omitempty"`
+	ChecksPassed              int                `json:"checks_passed,omitempty"`
+	ChecksFailed              int                `json:"checks_failed,omitempty"`
+	Error                     string             `json:"error,omitempty"`
+	LogsTail                  string             `json:"logs_tail,omitempty"`
+	PeakMemoryBytes           int64              `json:"peak_memory_bytes,omitempty"`
+	DiskFootprintBytes        int64              `json:"disk_footprint_bytes,omitempty"`
+	IncrementalPatchesApplied []string           `json:"incremental_patches_applied,omitempty"`
+	Remediation               *RemediationRecord `json:"remediation,omitempty"`
 }
 
 type Summary struct {

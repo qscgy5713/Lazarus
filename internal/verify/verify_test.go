@@ -782,3 +782,71 @@ func TestAutoSchemaCheckSQLite(t *testing.T) {
 		t.Errorf("missing table = %q, want non_existent_table", res.SchemaDrift.MissingTables[0])
 	}
 }
+
+func TestRunIncrementalPatchesSQLite(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+	basePath := sqliteBackup(t, dir, "base.db", 1)
+
+	// Create an incremental SQL patch
+	patchPath := filepath.Join(dir, "patch_01.sql")
+	patchContent := "INSERT INTO users (name) VALUES ('charlie');"
+	if err := os.WriteFile(patchPath, []byte(patchContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	target := config.Target{
+		Name:               "patch-test",
+		Engine:             config.EngineSQLite,
+		Path:               basePath,
+		IncrementalPatches: []string{filepath.Join(dir, "patch_*.sql")},
+		Checks: []config.Check{
+			{Name: "count-users", SQL: "SELECT COUNT(*) FROM users", Pattern: "^2$"},
+		},
+	}
+
+	res := Run(context.Background(), target, 0, false, false, "")
+	if !res.Passed {
+		t.Fatalf("expected run with incremental patch to pass, got err: %v", res.Err)
+	}
+	if len(res.IncrementalPatchesApplied) != 1 || res.IncrementalPatchesApplied[0] != "patch_01.sql" {
+		t.Errorf("IncrementalPatchesApplied = %v, want ['patch_01.sql']", res.IncrementalPatchesApplied)
+	}
+	if res.DiskFootprintBytes <= 0 {
+		t.Errorf("DiskFootprintBytes = %d, expected > 0", res.DiskFootprintBytes)
+	}
+}
+
+func TestRunRemediationOnFailure(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+	basePath := sqliteBackup(t, dir, "base.db", 1)
+	flagFile := filepath.Join(dir, "remediated.txt")
+
+	target := config.Target{
+		Name:   "remediation-test",
+		Engine: config.EngineSQLite,
+		Path:   basePath,
+		Checks: []config.Check{
+			{Name: "impossible-check", SQL: "SELECT COUNT(*) FROM users", Pattern: "^999$"},
+		},
+		Remediation: &config.RemediationConfig{
+			Command: fmt.Sprintf("echo 'disaster-recovered' > %s", flagFile),
+		},
+	}
+
+	res := Run(context.Background(), target, 0, false, false, "")
+	if res.Passed {
+		t.Fatal("expected drill to fail")
+	}
+	if res.Remediation == nil {
+		t.Fatal("expected Remediation result to be populated")
+	}
+	if !res.Remediation.Triggered || !res.Remediation.Success {
+		t.Errorf("Remediation = %+v, expected triggered and success", res.Remediation)
+	}
+	data, err := os.ReadFile(flagFile)
+	if err != nil || !strings.Contains(string(data), "disaster-recovered") {
+		t.Errorf("expected remediation script to execute and write to flagFile, got: %s (err: %v)", string(data), err)
+	}
+}

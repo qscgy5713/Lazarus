@@ -74,6 +74,18 @@ func Locate(pattern string) (*File, error) {
 	return files[0], nil
 }
 
+// Identify inspects and parses an existing backup file at path.
+func Identify(path string) (*File, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat %q: %w", path, err)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("%q is a directory, not a backup file", path)
+	}
+	return parseBackupFile(path, info)
+}
+
 type fileCandidate struct {
 	path string
 	info os.FileInfo
@@ -152,9 +164,9 @@ func parseBackupFile(path string, info os.FileInfo) (*File, error) {
 	return file, nil
 }
 
-// encryptedSuffixes are the conventional extensions for a GPG-encrypted
-// file — binary OpenPGP output (.gpg, .pgp) or ASCII-armored (.asc).
-var encryptedSuffixes = []string{".gpg", ".pgp", ".asc"}
+// encryptedSuffixes are the conventional extensions for encrypted backup archives:
+// GPG/OpenPGP (.gpg, .pgp, .asc) or modern age encryption (.age).
+var encryptedSuffixes = []string{".gpg", ".pgp", ".asc", ".age"}
 
 func hasEncryptedSuffix(name string) bool {
 	lower := strings.ToLower(name)
@@ -179,7 +191,7 @@ func stripEnvelopeExtensions(path string) string {
 			break
 		}
 		ext := strings.ToLower(rawExt)
-		if ext == ".gpg" || ext == ".pgp" || ext == ".asc" || ext == ".gz" || ext == ".zst" || ext == ".zstd" {
+		if ext == ".gpg" || ext == ".pgp" || ext == ".asc" || ext == ".age" || ext == ".gz" || ext == ".zst" || ext == ".zstd" {
 			base = base[:len(base)-len(rawExt)]
 		} else {
 			break

@@ -291,3 +291,113 @@ func ReapOrphans(ctx context.Context, maxAge time.Duration) (int, error) {
 
 	return reaped, nil
 }
+
+// ResourceFootprint holds container RAM and disk usage measurements.
+type ResourceFootprint struct {
+	PeakMemoryBytes    int64
+	DiskFootprintBytes int64
+}
+
+// Footprint inspects the running container to measure peak/current RAM and database disk footprint.
+func (s *Sandbox) Footprint(ctx context.Context) (ResourceFootprint, error) {
+	if s == nil || s.Name == "" {
+		return ResourceFootprint{}, fmt.Errorf("sandbox is not running")
+	}
+
+	var fp ResourceFootprint
+
+	// 1. Memory Measurement: Check container cgroups peak/current first
+	cgroupOut, err := s.Exec(ctx, "", "sh", "-c",
+		"cat /sys/fs/cgroup/memory.peak 2>/dev/null || cat /sys/fs/cgroup/memory/memory.max_usage_in_bytes 2>/dev/null || cat /sys/fs/cgroup/memory.current 2>/dev/null")
+	if err == nil {
+		trimmed := strings.TrimSpace(cgroupOut)
+		if bytesVal, parseErr := strconv.ParseInt(trimmed, 10, 64); parseErr == nil && bytesVal > 0 {
+			fp.PeakMemoryBytes = bytesVal
+		}
+	}
+
+	// Fallback to docker stats if cgroup wasn't available inside container
+	if fp.PeakMemoryBytes == 0 {
+		out, err := exec.CommandContext(ctx, "docker", "stats", "--no-stream", "--format", "{{.MemUsage}}", s.Name).Output()
+		if err == nil {
+			statStr := strings.TrimSpace(string(out))
+			if idx := strings.Index(statStr, "/"); idx != -1 {
+				statStr = strings.TrimSpace(statStr[:idx])
+			}
+			if b, parseErr := ParseSizeToBytes(statStr); parseErr == nil {
+				fp.PeakMemoryBytes = b
+			}
+		}
+	}
+
+	// 2. Disk Footprint Measurement: du -sk on data directory
+	var targetDir string
+	switch s.Engine {
+	case config.EnginePostgres:
+		targetDir = "/var/lib/postgresql/data"
+	case config.EngineMySQL:
+		targetDir = "/var/lib/mysql"
+	case config.EngineRedis:
+		targetDir = "/data"
+	case config.EngineMongoDB:
+		targetDir = "/data/db"
+	default:
+		targetDir = "/data"
+	}
+
+	duOut, err := s.Exec(ctx, "", "sh", "-c", fmt.Sprintf("du -sk %s 2>/dev/null || du -sk /data /var/lib/postgresql /var/lib/mysql /data/db 2>/dev/null", targetDir))
+	if err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(duOut), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 1 {
+				if kb, err := strconv.ParseInt(fields[0], 10, 64); err == nil && kb > 0 {
+					fp.DiskFootprintBytes = kb * 1024
+					break
+				}
+			}
+		}
+	}
+
+	return fp, nil
+}
+
+// ParseSizeToBytes parses human-readable sizes (e.g. "124.5MiB", "100MB", "1.2GB", "512KB", "1024B") to bytes.
+func ParseSizeToBytes(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty size string")
+	}
+
+	units := []struct {
+		suffix string
+		mult   float64
+	}{
+		{"tib", 1024 * 1024 * 1024 * 1024},
+		{"tb", 1000 * 1000 * 1000 * 1000},
+		{"gib", 1024 * 1024 * 1024},
+		{"gb", 1000 * 1000 * 1000},
+		{"mib", 1024 * 1024},
+		{"mb", 1000 * 1000},
+		{"kib", 1024},
+		{"kb", 1000},
+		{"b", 1},
+	}
+
+	lower := strings.ToLower(s)
+	for _, u := range units {
+		if strings.HasSuffix(lower, u.suffix) {
+			numStr := strings.TrimSpace(lower[:len(lower)-len(u.suffix)])
+			val, err := strconv.ParseFloat(numStr, 64)
+			if err != nil {
+				return 0, err
+			}
+			return int64(val * u.mult), nil
+		}
+	}
+
+	val, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("unrecognized size format %q: %w", s, err)
+	}
+	return val, nil
+}

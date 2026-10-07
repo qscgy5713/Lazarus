@@ -159,6 +159,24 @@ targets:
     auto_schema_check: true
     schema_baseline: [users, orders, schema_migrations]
 
+    # Incremental / Differential Backup Chain Replay:
+    # Applies multi-stage incremental or WAL SQL patches in chronological order
+    # after the base backup is restored, proving the full delta recovery chain.
+    # incremental_patches:
+    #   - /backups/postgres/diff-*.sql.gz
+
+    # Modern Age Cryptographic Envelope:
+    # Set target-specific age private key or pass via LAZARUS_AGE_IDENTITY / LAZARUS_AGE_KEY_FILE env.
+    # age_identity: "AGE-SECRET-KEY-1..."
+
+    # Automated Incident Remediation Playbook:
+    # When a disaster recovery drill encounters failure or critical drift,
+    # automatically triggers on-call remediation scripts (e.g. restart backup cron, invoke k8s job).
+    # remediation:
+    #   command: "kubectl create job --from=cronjob/db-backup emergency-backup-$(date +%s)"
+    #   trigger_on: failure   # "failure" (default) or "critical_drift"
+    #   timeout: 5m
+
     # The restore "succeeding" isn't enough: a schema-only dump restores
     # fine and leaves you with an empty database. These assertions are what
     # prove the backup carries real data.

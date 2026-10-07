@@ -15,6 +15,11 @@ import (
 // Prepare extracts and decrypts an RDB backup into a temporary directory containing dump.rdb,
 // suitable for mounting into a Redis sandbox container at /data.
 func Prepare(ctx context.Context, file *backup.File, gpgPassphrase string) (string, func(), error) {
+	return PrepareWithOptions(ctx, file, gpgPassphrase, "")
+}
+
+// PrepareWithOptions extracts and decrypts an RDB backup using GPG or Age identity.
+func PrepareWithOptions(ctx context.Context, file *backup.File, gpgPassphrase, ageIdentity string) (string, func(), error) {
 	tmpDir, err := os.MkdirTemp("", "lazarus-redis-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("create redis temp dir: %w", err)
@@ -30,7 +35,7 @@ func Prepare(ctx context.Context, file *backup.File, gpgPassphrase string) (stri
 
 	srcPath := file.Path
 	if file.Encrypted {
-		decryptedPath, cleanup, err := decrypt.Decrypt(ctx, srcPath, gpgPassphrase)
+		decryptedPath, cleanup, err := decrypt.DecryptWithOptions(ctx, srcPath, gpgPassphrase, ageIdentity)
 		if err != nil {
 			cleanupAll()
 			return "", nil, err

@@ -429,6 +429,66 @@ LAZARUS_GPG_PASSPHRASE=your-passphrase lazarus --config lazarus.yml
 
 解密後的明文只會短暫存在一個權限收緊為 `0600`（僅擁有者可讀）的暫存檔裡，還原流程結束就刪除——加密的重點就是保護資料，解密的中繼過程沒道理讓同一台機器上的其他使用者看得到。
 
+### 現代輕量密碼學 AGE 加密備份支援 (`.age`)
+
+除了傳統 GPG 之外，Lazarus 原生支援雲原生社群廣泛採用的現代簡約加密工具 [`age`](https://github.com/FiloSottile/age)。只要檔案副檔名為 `.age`（例如 `backup.sql.gz.age` 或 `dump.rdb.age`），Lazarus 自動調用 `age --decrypt` 進行解密。
+
+私鑰身份憑證支援以下兩種方式提供（亦可在 target 內設定 `age_identity`）：
+
+```bash
+# 方式 A：直接透過環境變數注入私鑰內容
+LAZARUS_AGE_IDENTITY="AGE-SECRET-KEY-1..." lazarus --config lazarus.yml
+
+# 方式 B：指定儲存 age 私鑰的私密金鑰檔案路徑
+LAZARUS_AGE_KEY_FILE="/etc/lazarus/keys/key.txt" lazarus --config lazarus.yml
+```
+
+解密過程採用臨時獨立沙盒並使用嚴格許可權 `0600`，執行完畢後立即強制抹除暫存金鑰與解密檔。
+
+### 差異與增量備份鍊回放演練 (`incremental_patches`)
+
+企業級資料庫常採用「全量 Base 備份 + 週期性差異/增量 Dump」的備份策略。如果增量鍊中有任何一節損壞或遺失，整個災難復原都會宣告破產。
+
+Lazarus 支援在 Base 備份成功還原後，自動搜尋並依檔案修改時間戳升冪（由舊到新）嚴格套用增量 SQL/Dump 補丁鍊：
+
+```yaml
+targets:
+  - name: production-postgres
+    engine: postgres
+    path: /backups/postgres/base-*.sql.gz
+    # 支援 glob 比對多個差異/增量補丁檔，自動依時間順序依序回放
+    incremental_patches:
+      - /backups/postgres/inc-*.sql.gz
+```
+
+若任何一個增量補丁在回放過程中失敗，演練立即標記為 `[restore]` 階段中斷並發出警報，報告中完整記錄 `Incremental Patches Applied` 清單。
+
+### 沙盒真實資源開銷分析 (RAM Peak & Disk Footprint)
+
+資料庫備份還原是高壓的 I/O 與記憶體密集型任務。Lazarus 在沙盒還原演練期間透過 cgroup 及容器環境實時採樣：
+- **RAM Peak**：精確量測資料庫還原過程中的記憶體最高峰值，防範生產環境在災難復原時發生意外的 OOM Kill。
+- **Disk Footprint**：量測資料解壓並寫入資料庫後在磁碟上的真實檔案目錄佔用（非僅僅壓縮檔大小），計算出精確的資料膨脹倍率。
+
+指標會自動收錄於 CLI 輸出、JSON 審計報告、GitHub Step Summary 以及 Web 控制台儀表板。
+
+### 災難應變自動修復與處置劇本 (`remediation`)
+
+當演練失敗、發現備份無法還原或資料異常萎縮時，除了發送通知警報，Lazarus 支援自動觸發預先定義的緊急處置劇本（Automated Remediation Playbook）：
+
+```yaml
+targets:
+  - name: production-postgres
+    engine: postgres
+    path: /backups/postgres/shop-*.sql.gz
+    remediation:
+      # 當演練失敗時自動執行緊急處置腳本
+      command: "kubectl create job --from=cronjob/db-backup emergency-backup-$(date +%s)"
+      trigger_on: failure   # "failure" (預設) 或 "critical_drift" (資料結構重大漂移時)
+      timeout: 5m
+```
+
+處置腳本執行時會自動注入演練環境變數（`$LAZARUS_TARGET`, `$LAZARUS_STAGE`, `$LAZARUS_ERROR`, `$LAZARUS_BACKUP_PATH` 等），並在稽核報告中記錄處置結果與耗時。
+
 ## 失敗通知
 
 只靠 exit code 的話，凌晨四點跑的 cron 發現備份壞了也沒人知道。設定 webhook 就能把結果送到 Slack / Discord：

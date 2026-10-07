@@ -85,3 +85,43 @@ func TestReapOrphans(t *testing.T) {
 		t.Errorf("expected %s to be reaped", oldTemp)
 	}
 }
+
+func TestParseSizeToBytes(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    int64
+		wantErr bool
+	}{
+		{"1024B", 1024, false},
+		{"1KiB", 1024, false},
+		{"1KB", 1000, false},
+		{"10MiB", 10 * 1024 * 1024, false},
+		{"2.5GB", 2500000000, false},
+		{"1GiB", 1024 * 1024 * 1024, false},
+		{"500", 500, false},
+		{"", 0, true},
+		{"invalid-size", 0, true},
+	}
+
+	for _, tt := range tests {
+		got, err := ParseSizeToBytes(tt.input)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("ParseSizeToBytes(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			continue
+		}
+		if !tt.wantErr && got != tt.want {
+			t.Errorf("ParseSizeToBytes(%q) = %d, want %d", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestFootprintNotRunning(t *testing.T) {
+	var s *Sandbox
+	if _, err := s.Footprint(context.Background()); err == nil {
+		t.Error("expected error for nil sandbox, got nil")
+	}
+	empty := &Sandbox{}
+	if _, err := empty.Footprint(context.Background()); err == nil {
+		t.Error("expected error for empty sandbox, got nil")
+	}
+}

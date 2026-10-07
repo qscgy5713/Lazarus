@@ -137,7 +137,7 @@ func TestOpenPlainFile(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	reader, closer, err := open(context.Background(), &backup.File{Path: path}, "")
+	reader, closer, err := open(context.Background(), &backup.File{Path: path}, Options{})
 	if err != nil {
 		t.Fatalf("open() error = %v", err)
 	}
@@ -166,7 +166,7 @@ func TestOpenDecompressesGzip(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	reader, closer, err := open(context.Background(), &backup.File{Path: path, Compressed: true}, "")
+	reader, closer, err := open(context.Background(), &backup.File{Path: path, Compressed: true}, Options{})
 	if err != nil {
 		t.Fatalf("open() error = %v", err)
 	}
@@ -190,7 +190,19 @@ func TestOpenRejectsCorruptGzip(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	if _, _, err := open(context.Background(), &backup.File{Path: path, Compressed: true}, ""); err == nil {
+	if _, _, err := open(context.Background(), &backup.File{Path: path, Compressed: true}, Options{}); err == nil {
 		t.Fatal("open() error = nil, want an error for a file that isn't valid gzip")
+	}
+}
+
+func TestApplyPatchUnsupportedEngine(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "patch.sql")
+	if err := os.WriteFile(p, []byte("SELECT 1;"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := ApplyPatch(context.Background(), nil, config.Engine("unknown"), &backup.File{Path: p}, Options{})
+	if err == nil {
+		t.Fatal("expected error for unsupported engine, got nil")
 	}
 }

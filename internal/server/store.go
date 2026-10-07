@@ -79,6 +79,10 @@ func (s *Store) RecordReport(report InboundReport) {
 		rec.LastRestoreMs = res.RestoreDurationMs
 		rec.LastChecks = res.Checks
 		rec.LastLogsTail = res.LogsTail
+		rec.PeakMemoryBytes = res.PeakMemoryBytes
+		rec.DiskFootprintBytes = res.DiskFootprintBytes
+		rec.IncrementalPatchesApplied = res.IncrementalPatchesApplied
+		rec.Remediation = res.Remediation
 		rec.SLARTOMs = res.SLARTOMs
 		rec.SLARTO = ""
 		if res.SLARTOMs > 0 {
@@ -104,20 +108,24 @@ func (s *Store) RecordReport(report InboundReport) {
 
 		// Append to history, keeping last 20
 		rec.RecentHistory = append(rec.RecentHistory, HistoryRecord{
-			Target:        res.Target,
-			Tags:          res.Tags,
-			DrilledAt:     now,
-			Passed:        res.Passed,
-			Stage:         res.Stage,
-			BackupPath:    res.BackupPath,
-			BackupSize:    res.BackupSizeHuman,
-			RestoreMs:     res.RestoreDurationMs,
-			TotalDuration: res.DurationMs,
-			ChecksTotal:   checksTotal,
-			ChecksPassed:  checksPassed,
-			ChecksFailed:  checksFailed,
-			Error:         res.Error,
-			LogsTail:      res.LogsTail,
+			Target:                    res.Target,
+			Tags:                      res.Tags,
+			DrilledAt:                 now,
+			Passed:                    res.Passed,
+			Stage:                     res.Stage,
+			BackupPath:                res.BackupPath,
+			BackupSize:                res.BackupSizeHuman,
+			RestoreMs:                 res.RestoreDurationMs,
+			TotalDuration:             res.DurationMs,
+			ChecksTotal:               checksTotal,
+			ChecksPassed:              checksPassed,
+			ChecksFailed:              checksFailed,
+			Error:                     res.Error,
+			LogsTail:                  res.LogsTail,
+			PeakMemoryBytes:           res.PeakMemoryBytes,
+			DiskFootprintBytes:        res.DiskFootprintBytes,
+			IncrementalPatchesApplied: res.IncrementalPatchesApplied,
+			Remediation:               res.Remediation,
 		})
 		if len(rec.RecentHistory) > 20 {
 			rec.RecentHistory = rec.RecentHistory[len(rec.RecentHistory)-20:]

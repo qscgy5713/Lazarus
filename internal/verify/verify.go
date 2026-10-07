@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,6 +86,26 @@ type Result struct {
 	ChaosInjected bool
 	ChaosPassed   bool
 	ChaosMessage  string
+
+	// Sandbox resource usage profiling
+	PeakMemoryBytes    int64
+	DiskFootprintBytes int64
+
+	// Incremental/Differential backup replay chain
+	IncrementalPatchesApplied []string
+
+	// Incident remediation playbook execution result
+	Remediation *RemediationResult
+}
+
+// RemediationResult captures the execution details and outcome of an incident remediation playbook.
+type RemediationResult struct {
+	Triggered bool          `json:"triggered"`
+	Command   string        `json:"command"`
+	Success   bool          `json:"success"`
+	Output    string        `json:"output,omitempty"`
+	Error     string        `json:"error,omitempty"`
+	Duration  time.Duration `json:"duration"`
 }
 
 // ProgressCallback is invoked as a target transitions between drill stages.
@@ -132,6 +154,29 @@ func RunWithProgress(ctx context.Context, target config.Target, baseline int64, 
 					result.Stage = StagePostHook
 					result.Err = fmt.Errorf("post_drill_command failed: %w", hookErr)
 				}
+			}
+		}
+
+		// Trigger automated incident remediation playbook if configured and criteria met
+		if target.Remediation != nil && target.Remediation.Command != "" {
+			shouldTrigger := false
+			triggerOn := target.Remediation.TriggerOn
+			if triggerOn == "" || triggerOn == "failure" {
+				shouldTrigger = !result.Passed || result.Err != nil
+			} else if triggerOn == "critical_drift" {
+				shouldTrigger = result.Stage == StageSizeDrift || (result.SchemaDrift != nil && len(result.SchemaDrift.MissingTables) > 0)
+			}
+			if shouldTrigger {
+				remRes := runRemediation(ctx, target.Remediation.Command, target.Remediation.Timeout, map[string]string{
+					"LAZARUS_TARGET":              target.Name,
+					"LAZARUS_ENGINE":              string(target.Engine),
+					"LAZARUS_STATUS":              hookStatus(result.Passed),
+					"LAZARUS_STAGE":               string(result.Stage),
+					"LAZARUS_ERROR":               errString(result.Err),
+					"LAZARUS_BACKUP_PATH":         backupPath(result.Backup),
+					"LAZARUS_REMEDIATION_TRIGGER": triggerOn,
+				})
+				result.Remediation = &remRes
 			}
 		}
 	}()
@@ -280,6 +325,9 @@ func RunWithProgress(ctx context.Context, target config.Target, baseline int64, 
 			result.RestoreDuration = fbResult.RestoreDuration
 			result.Checks = fbResult.Checks
 			result.SchemaDrift = fbResult.SchemaDrift
+			result.PeakMemoryBytes = fbResult.PeakMemoryBytes
+			result.DiskFootprintBytes = fbResult.DiskFootprintBytes
+			result.IncrementalPatchesApplied = fbResult.IncrementalPatchesApplied
 			result.FallbackUsed = true
 			result.FallbackBackup = fallbackFile
 			result.FallbackRPO = file.ModTime.Sub(fallbackFile.ModTime)
@@ -346,7 +394,7 @@ func executeSingleDrill(
 			onProgress(target.Name, StageRestore, "", false, false)
 		}
 		restoreStarted := time.Now()
-		path, cleanup, err := sqlitecheck.Prepare(ctx, file, gpgPassphrase)
+		path, cleanup, err := sqlitecheck.PrepareWithOptions(ctx, file, gpgPassphrase, target.AgeIdentity)
 		if err != nil {
 			return err, StageRestore
 		}
@@ -361,7 +409,16 @@ func executeSingleDrill(
 		if err := sqlitecheck.IntegrityCheck(ctx, path); err != nil {
 			return err, StageRestore
 		}
+
+		if err := applyIncrementalPatches(ctx, target, nil, path, gpgPassphrase, result); err != nil {
+			return err, StageRestore
+		}
+
 		result.RestoreDuration = time.Since(restoreStarted)
+		if fi, err := os.Stat(path); err == nil {
+			result.DiskFootprintBytes = fi.Size()
+		}
+
 		runChecks = func(ctx context.Context) []check.Result {
 			return sqlitecheck.RunChecks(ctx, path, target.Checks)
 		}
@@ -377,7 +434,7 @@ func executeSingleDrill(
 			onProgress(target.Name, StageSandbox, "", false, false)
 		}
 		restoreStarted := time.Now()
-		rdbDir, cleanupRDB, err := redischeck.Prepare(ctx, file, gpgPassphrase)
+		rdbDir, cleanupRDB, err := redischeck.PrepareWithOptions(ctx, file, gpgPassphrase, target.AgeIdentity)
 		if err != nil {
 			return err, StageRestore
 		}
@@ -400,6 +457,11 @@ func executeSingleDrill(
 		}()
 
 		result.RestoreDuration = time.Since(restoreStarted)
+		if fp, err := sb.Footprint(ctx); err == nil {
+			result.PeakMemoryBytes = fp.PeakMemoryBytes
+			result.DiskFootprintBytes = fp.DiskFootprintBytes
+		}
+
 		runChecks = func(ctx context.Context) []check.Result {
 			return check.RunAll(ctx, sb, target.Engine, target.Checks)
 		}
@@ -429,10 +491,23 @@ func executeSingleDrill(
 			onProgress(target.Name, StageRestore, "", false, false)
 		}
 		restoreStarted := time.Now()
-		if _, err := restore.Run(ctx, sb, target.Engine, file, gpgPassphrase); err != nil {
+		restoreOpts := restore.Options{
+			GPGPassphrase: gpgPassphrase,
+			AgeIdentity:   target.AgeIdentity,
+		}
+		if _, err := restore.RunWithOptions(ctx, sb, target.Engine, file, restoreOpts); err != nil {
 			return err, StageRestore
 		}
+
+		if err := applyIncrementalPatches(ctx, target, sb, "", gpgPassphrase, result); err != nil {
+			return err, StageRestore
+		}
+
 		result.RestoreDuration = time.Since(restoreStarted)
+		if fp, err := sb.Footprint(ctx); err == nil {
+			result.PeakMemoryBytes = fp.PeakMemoryBytes
+			result.DiskFootprintBytes = fp.DiskFootprintBytes
+		}
 		runChecks = func(ctx context.Context) []check.Result {
 			return check.RunAll(ctx, sb, target.Engine, target.Checks)
 		}
@@ -694,4 +769,102 @@ func isTerminal(f *os.File) bool {
 		return false
 	}
 	return (stat.Mode() & os.ModeCharDevice) != 0
+}
+
+func applyIncrementalPatches(
+	ctx context.Context,
+	target config.Target,
+	sb *sandbox.Sandbox,
+	sqlitePath string,
+	gpgPassphrase string,
+	result *Result,
+) error {
+	if len(target.IncrementalPatches) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	var patchFiles []*backup.File
+
+	for _, pattern := range target.IncrementalPatches {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return fmt.Errorf("invalid incremental patch pattern %q: %w", pattern, err)
+		}
+		for _, m := range matches {
+			if seen[m] {
+				continue
+			}
+			seen[m] = true
+			f, err := backup.Identify(m)
+			if err != nil {
+				return fmt.Errorf("identify incremental patch %q: %w", m, err)
+			}
+			patchFiles = append(patchFiles, f)
+		}
+	}
+
+	// Sort chronologically ascending (oldest first to newest)
+	sort.Slice(patchFiles, func(i, j int) bool {
+		return patchFiles[i].ModTime.Before(patchFiles[j].ModTime)
+	})
+
+	restoreOpts := restore.Options{
+		GPGPassphrase: gpgPassphrase,
+		AgeIdentity:   target.AgeIdentity,
+	}
+
+	for _, patch := range patchFiles {
+		patchBase := filepath.Base(patch.Path)
+		if target.Engine == config.EngineSQLite {
+			cmd := exec.CommandContext(ctx, "sqlite3", sqlitePath, fmt.Sprintf(".read %s", patch.Path))
+			if out, err := cmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("incremental patch %s failed: %w: %s", patchBase, err, strings.TrimSpace(string(out)))
+			}
+		} else {
+			if _, err := restore.ApplyPatch(ctx, sb, target.Engine, patch, restoreOpts); err != nil {
+				return fmt.Errorf("incremental patch %s failed: %w", patchBase, err)
+			}
+		}
+		result.IncrementalPatchesApplied = append(result.IncrementalPatchesApplied, patchBase)
+	}
+
+	return nil
+}
+
+func runRemediation(ctx context.Context, cmdStr string, timeout time.Duration, env map[string]string) RemediationResult {
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	started := time.Now()
+	res := RemediationResult{
+		Triggered: true,
+		Command:   cmdStr,
+	}
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
+	cmd.Env = os.Environ()
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	out, err := cmd.CombinedOutput()
+	res.Duration = time.Since(started)
+	res.Output = strings.TrimSpace(string(out))
+
+	if err != nil {
+		res.Success = false
+		if ctx.Err() == context.DeadlineExceeded {
+			res.Error = fmt.Sprintf("remediation timed out after %s", timeout)
+		} else {
+			res.Error = err.Error()
+		}
+	} else {
+		res.Success = true
+	}
+
+	return res
 }

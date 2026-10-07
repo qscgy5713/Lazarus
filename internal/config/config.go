@@ -50,6 +50,10 @@ type Config struct {
 	// needs no passphrase at all, so this can be left unset.
 	GPGPassphrase string `yaml:"-"`
 
+	// AgeIdentity decrypts modern age-encrypted backups (.age).
+	// Sourced from LAZARUS_AGE_IDENTITY or LAZARUS_AGE_KEY_FILE env vars.
+	AgeIdentity string `yaml:"-"`
+
 	Targets []Target `yaml:"targets"`
 }
 
@@ -224,7 +228,26 @@ type Target struct {
 	// FallbackOnFailure and alerting mechanisms correctly rescue the drill.
 	Chaos ChaosConfig `yaml:"chaos"`
 
+	// IncrementalPatches specifies glob patterns for incremental/differential
+	// dumps applied in chronological order after the base backup is restored.
+	IncrementalPatches []string `yaml:"incremental_patches"`
+
+	// AgeIdentity is an optional target-level age private key to decrypt .age envelopes.
+	AgeIdentity string `yaml:"age_identity"`
+
+	// Remediation configures automated incident remediation playbooks triggered
+	// when disaster recovery drills encounter failures.
+	Remediation *RemediationConfig `yaml:"remediation"`
+
 	Checks []Check `yaml:"checks"`
+}
+
+// RemediationConfig defines automated on-call disaster recovery playbooks
+// triggered when a drill encounters a fatal failure.
+type RemediationConfig struct {
+	Command   string        `yaml:"command"`
+	TriggerOn string        `yaml:"trigger_on"` // "failure" (default) or "critical_drift"
+	Timeout   time.Duration `yaml:"timeout"`    // default 5m
 }
 
 // ChaosConfig controls deliberate backup corruption testing to verify fallback resilience.
@@ -330,6 +353,12 @@ func (c *Config) applyDefaultsAndValidate() error {
 	}
 
 	c.GPGPassphrase = os.Getenv(gpgPassphraseEnvVar)
+	c.AgeIdentity = os.Getenv("LAZARUS_AGE_IDENTITY")
+	if c.AgeIdentity == "" && os.Getenv("LAZARUS_AGE_KEY_FILE") != "" {
+		if data, err := os.ReadFile(os.Getenv("LAZARUS_AGE_KEY_FILE")); err == nil {
+			c.AgeIdentity = strings.TrimSpace(string(data))
+		}
+	}
 
 	seen := make(map[string]bool, len(c.Targets))
 	for i := range c.Targets {
@@ -462,6 +491,14 @@ func (c *Config) applyDefaultsAndValidate() error {
 		if (t.PreDrillCommand != "" || t.PostDrillCommand != "") && t.HooksTimeout <= 0 {
 			t.HooksTimeout = 5 * time.Minute
 		}
+		if t.Remediation != nil {
+			if t.Remediation.TriggerOn == "" {
+				t.Remediation.TriggerOn = "failure"
+			}
+			if t.Remediation.Timeout <= 0 {
+				t.Remediation.Timeout = 5 * time.Minute
+			}
+		}
 
 		if t.CPUs != "" {
 			t.CPUs = strings.TrimSpace(t.CPUs)
@@ -478,6 +515,10 @@ func (c *Config) applyDefaultsAndValidate() error {
 
 		if t.CleanupBackup && strings.ContainsAny(t.Path, "*?[") {
 			return fmt.Errorf("target %q: cleanup_backup cannot be combined with glob pattern path %q to prevent deleting rolling backup archives", t.Name, t.Path)
+		}
+
+		if t.AgeIdentity == "" {
+			t.AgeIdentity = c.AgeIdentity
 		}
 
 		for j := range t.Checks {
