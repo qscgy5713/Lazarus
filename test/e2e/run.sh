@@ -22,7 +22,12 @@ cleanup() {
   for pid in "${PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
   docker ps -aq --filter "name=${PREFIX}" | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker ps -aq --filter "label=lazarus.sandbox=true" | xargs -r docker rm -f >/dev/null 2>&1 || true
-  rm -rf "$WORK"
+  # Emulators run as root on Linux, so files they wrote under $WORK aren't
+  # removable by the runner user; delete those from inside a container.
+  if ! rm -rf "$WORK" 2>/dev/null; then
+    docker run --rm --entrypoint rm -v "$WORK:/w" postgres:16-alpine -rf /w/s3data /w/gcsdata >/dev/null 2>&1 || true
+    rm -rf "$WORK" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
