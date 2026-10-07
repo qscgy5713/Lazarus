@@ -23,7 +23,19 @@
 - [x] Fallback 成功時使用 fallback 的 RPO 判定
 - [x] `lazarus export` 不再把未驗證 target 標為 PASS
 - [x] SSE 不再阻塞優雅關機；UI SSE/匯出帶 Token
-- [ ] config `schedule` 欄位實作 cron 排程或移除
-- [ ] 驗證 `remediation.trigger_on` 只能是 `failure` / `critical_drift`
-- [ ] chaos 改為串流複製，避免大型備份整檔載入記憶體
-- [ ] UI 對 403 改用非阻塞提示取代 `alert()`
+- [x] config `schedule` 欄位實作 cron 排程或移除
+- [x] 驗證 `remediation.trigger_on` 只能是 `failure` / `critical_drift`
+- [x] chaos 改為串流複製，避免大型備份整檔載入記憶體
+- [x] UI 對 403 改用非阻塞提示取代 `alert()`
+
+## 剩餘缺口補完 (2026-10-07 下午)
+- [x] fallback 成功仍通知；size drift 基準不被舊備份覆蓋
+- [x] Worker 任務租約與重派（離線／逾時）
+- [x] 稽核紀錄留存（筆數＋天數）與重啟後持久化
+- [x] 具名使用者（users file）與操作紀錄 API／CSV／UI
+- [x] session cookie 登入、CSRF header、驗證失敗限流
+- [x] GCS / Azure `endpoint`、Azure 簽章修正、憑證錯誤不再靜默
+- [x] 沙盒 `ready_timeout`
+- [x] E2E 腳本與 CI 工作流程（6 種資料庫、GPG/age、S3/GCS/Azure 模擬器、RBAC、Worker 租約）
+- [ ] SSO / OIDC 整合（待決定身分提供者）
+- [ ] 多節點高可用（待決定資料庫，例如 PostgreSQL）

@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -28,6 +27,18 @@ type Config struct {
 	AlertWebhookURL  string
 	AlertFormat      string
 	AlertInterval    time.Duration
+
+	// Users are named keys (see LoadUsers) so actions in the audit log are
+	// attributed to a person rather than a shared key.
+	Users []User
+	// HistoryLimit caps drill history records kept per target (default 1000).
+	HistoryLimit int
+	// Retention drops drill history and audit events older than this
+	// (default 400 days, i.e. at least a year of audit evidence).
+	Retention time.Duration
+	// LeaseTimeout requeues a claimed drill that hasn't reported back within
+	// this long, even if its worker still heartbeats (default 2h).
+	LeaseTimeout time.Duration
 }
 
 type Server struct {
@@ -47,6 +58,9 @@ type Server struct {
 	// otherwise http.Server.Shutdown waits on them until its deadline.
 	streamStop     chan struct{}
 	streamStopOnce sync.Once
+
+	sessions *sessionStore
+	limiter  *authLimiter
 }
 
 func New(cfg Config) *Server {
@@ -59,7 +73,10 @@ func New(cfg Config) *Server {
 	if cfg.AlertFormat == "" {
 		cfg.AlertFormat = "slack"
 	}
-	store := NewStore(cfg.StateFile, cfg.OverdueThreshold)
+	if cfg.LeaseTimeout <= 0 {
+		cfg.LeaseTimeout = 2 * time.Hour
+	}
+	store := NewStoreWithRetention(cfg.StateFile, cfg.OverdueThreshold, cfg.HistoryLimit, cfg.Retention)
 	if cfg.DemoMode {
 		store.SeedDemoData()
 	}
@@ -73,8 +90,11 @@ func New(cfg Config) *Server {
 		alertDone:     make(chan struct{}),
 		streamClients: make(map[chan []byte]struct{}),
 		streamStop:    make(chan struct{}),
+		sessions:      newSessionStore(12 * time.Hour),
+		limiter:       newAuthLimiter(10, time.Minute),
 	}
 	s.routes()
+	go s.leaseReaper()
 	if cfg.AlertWebhookURL != "" {
 		s.startAlertWorker()
 	} else {
@@ -130,6 +150,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /", s.handleDashboard)
 	s.mux.HandleFunc("GET /api/v1/auth/me", s.handleAuthMe)
 	s.mux.HandleFunc("POST /api/v1/auth/login", s.handleAuthLogin)
+	s.mux.HandleFunc("POST /api/v1/auth/logout", s.handleAuthLogout)
+	s.mux.HandleFunc("GET /api/v1/audit", s.handleGetAudit)
+	s.mux.HandleFunc("GET /api/v1/export/audit.csv", s.handleExportAuditCSV)
 	s.mux.HandleFunc("POST /api/v1/reports", s.handlePostReport)
 	s.mux.HandleFunc("GET /api/v1/targets", s.handleGetTargets)
 	s.mux.HandleFunc("POST /api/v1/targets/{name}/mute", s.handleMuteTarget)
@@ -146,79 +169,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/export/csv", s.handleExportCSV)
 	s.mux.HandleFunc("GET /api/v1/export/certificate.pdf", s.handleExportPDF)
 	s.mux.HandleFunc("GET /api/v1/stream", s.handleStream)
-}
-
-// adminKey is the explicit admin key, falling back to the legacy APIKey.
-func (s *Server) adminKey() string {
-	if s.cfg.AdminKey != "" {
-		return s.cfg.AdminKey
-	}
-	return s.cfg.APIKey
-}
-
-// authRequired reports whether any key is configured. With none, every
-// caller is treated as admin for backward compatibility.
-func (s *Server) authRequired() bool {
-	return s.adminKey() != "" || s.cfg.ViewerKey != ""
-}
-
-func (s *Server) getRole(r *http.Request) UserRole {
-	return s.roleForToken(s.extractToken(r))
-}
-
-func (s *Server) roleForToken(token string) UserRole {
-	adminKey := s.adminKey()
-	viewerKey := s.cfg.ViewerKey
-
-	// If no auth keys configured at all, grant RoleAdmin by default
-	if !s.authRequired() {
-		return RoleAdmin
-	}
-
-	if token == "" {
-		return RoleAnonymous
-	}
-
-	if adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(adminKey)) == 1 {
-		return RoleAdmin
-	}
-	if viewerKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(viewerKey)) == 1 {
-		return RoleViewer
-	}
-
-	return RoleAnonymous
-}
-
-func (s *Server) extractToken(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
-	}
-	for _, header := range []string{"X-Lazarus-Key", "X-API-Key"} {
-		if val := r.Header.Get(header); val != "" {
-			return val
-		}
-	}
-	if q := r.URL.Query().Get("api_key"); q != "" {
-		return q
-	}
-	return ""
-}
-
-func (s *Server) requireRole(w http.ResponseWriter, r *http.Request, minRole UserRole) bool {
-	role := s.getRole(r)
-	if role == RoleAdmin {
-		return true
-	}
-	if minRole == RoleViewer && role == RoleViewer {
-		return true
-	}
-	if role == RoleAnonymous {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-		return false
-	}
-	http.Error(w, `{"error":"forbidden: admin role required"}`, http.StatusForbidden)
-	return false
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -257,7 +207,8 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePostReport(w http.ResponseWriter, r *http.Request) {
 	// Reports are audit evidence; a read-only viewer must not be able to forge them.
-	if !s.requireRole(w, r, RoleAdmin) {
+	actor, ok := s.authorize(w, r, RoleAdmin)
+	if !ok {
 		return
 	}
 
@@ -268,7 +219,7 @@ func (s *Server) handlePostReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.store.RecordReport(rep)
+	s.store.RecordReportBy(rep, actor.Name)
 	s.Broadcast("drill_report", rep)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -322,7 +273,8 @@ func (s *Server) handleGetDailyMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMuteTarget(w http.ResponseWriter, r *http.Request) {
-	if !s.requireRole(w, r, RoleAdmin) {
+	actor, ok := s.authorize(w, r, RoleAdmin)
+	if !ok {
 		return
 	}
 	name := r.PathValue("name")
@@ -334,13 +286,15 @@ func (s *Server) handleMuteTarget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"target not found"}`, http.StatusNotFound)
 		return
 	}
+	s.store.RecordAudit(actor, "mute", name, clientIP(r), "")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok","message":"target muted"}`))
 }
 
 func (s *Server) handleUnmuteTarget(w http.ResponseWriter, r *http.Request) {
-	if !s.requireRole(w, r, RoleAdmin) {
+	actor, ok := s.authorize(w, r, RoleAdmin)
+	if !ok {
 		return
 	}
 	name := r.PathValue("name")
@@ -352,13 +306,15 @@ func (s *Server) handleUnmuteTarget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"target not found"}`, http.StatusNotFound)
 		return
 	}
+	s.store.RecordAudit(actor, "unmute", name, clientIP(r), "")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok","message":"target unmuted"}`))
 }
 
 func (s *Server) handleTriggerTarget(w http.ResponseWriter, r *http.Request) {
-	if !s.requireRole(w, r, RoleAdmin) {
+	actor, ok := s.authorize(w, r, RoleAdmin)
+	if !ok {
 		return
 	}
 	name := r.PathValue("name")
@@ -370,6 +326,7 @@ func (s *Server) handleTriggerTarget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusNotFound)
 		return
 	}
+	s.store.RecordAudit(actor, "trigger", name, clientIP(r), "")
 	s.Broadcast("drill_triggered", map[string]string{"target": name})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
@@ -387,7 +344,7 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	targetFilter := r.URL.Query().Get("target")
 	statusFilter := r.URL.Query().Get("status")
 	tagFilter := r.URL.Query().Get("tag")
-	history := s.store.GetAuditHistory(targetFilter, statusFilter, tagFilter, 1000)
+	history := s.store.GetAuditHistory(targetFilter, statusFilter, tagFilter, 0)
 
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	filename := fmt.Sprintf("lazarus-audit-%s.csv", time.Now().UTC().Format("20060102-150405"))
@@ -413,6 +370,7 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 		"ChecksPassed",
 		"ChecksFailed",
 		"Error",
+		"ReportedBy",
 	})
 
 	for _, h := range history {
@@ -444,6 +402,7 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 			strconv.Itoa(h.ChecksPassed),
 			strconv.Itoa(h.ChecksFailed),
 			sanitizeCSVField(h.Error),
+			sanitizeCSVField(h.ReportedBy),
 		})
 	}
 }
@@ -685,34 +644,120 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
-	role := s.getRole(r)
+	res := s.authenticate(r)
+	role := RoleAnonymous
+	if res.ok {
+		role = res.principal.Role
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(AuthStatusResponse{
 		Role:          role,
-		Authenticated: role != RoleAnonymous,
+		Authenticated: res.ok,
 		AuthRequired:  s.authRequired(),
+		Username:      res.principal.Name,
 	})
 }
 
+// handleAuthLogin exchanges a key for an HttpOnly session cookie, so the web
+// UI never keeps the key in localStorage or puts it in URLs.
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if s.limiter.blocked(ip) {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, `{"error":"too many failed authentication attempts"}`, http.StatusTooManyRequests)
+		return
+	}
+
 	var body struct {
 		Token string `json:"token"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxSmallBodyBytes)
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	role := s.roleForToken(body.Token)
-	if role == RoleAnonymous {
-		http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
-		return
+	var p Principal
+	if !s.authRequired() {
+		p = Principal{Name: "anonymous", Role: RoleAdmin}
+	} else {
+		var ok bool
+		p, ok = s.principalForKey(body.Token)
+		if !ok {
+			s.limiter.fail(ip)
+			s.store.RecordAudit(Principal{Name: "unknown", Role: RoleAnonymous}, "login_failed", "", ip, "")
+			http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+			return
+		}
+		id, err := s.sessions.create(p)
+		if err != nil {
+			http.Error(w, `{"error":"could not create session"}`, http.StatusInternalServerError)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     sessionCookie,
+			Value:    id,
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   isHTTPS(r),
+			SameSite: http.SameSiteStrictMode,
+			MaxAge:   int(s.sessions.ttl.Seconds()),
+		})
+		s.store.RecordAudit(p, "login", "", ip, "")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(AuthStatusResponse{
-		Role:          role,
+		Role:          p.Role,
 		Authenticated: true,
 		AuthRequired:  s.authRequired(),
+		Username:      p.Name,
 	})
+}
+
+func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		s.sessions.delete(c.Value)
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: sessionCookie, Value: "", Path: "/", MaxAge: -1,
+		HttpOnly: true, Secure: isHTTPS(r), SameSite: http.SameSiteStrictMode,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+func (s *Server) handleGetAudit(w http.ResponseWriter, r *http.Request) {
+	if !s.requireRole(w, r, RoleViewer) {
+		return
+	}
+	limit := 200
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
+		limit = v
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.store.GetAuditEvents(limit))
+}
+
+func (s *Server) handleExportAuditCSV(w http.ResponseWriter, r *http.Request) {
+	if !s.requireRole(w, r, RoleViewer) {
+		return
+	}
+	events := s.store.GetAuditEvents(0)
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	filename := fmt.Sprintf("lazarus-operations-%s.csv", time.Now().UTC().Format("20060102-150405"))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	writer := csv.NewWriter(w)
+	defer writer.Flush()
+	_ = writer.Write([]string{"Time", "Actor", "Role", "Action", "Target", "RemoteAddr", "Detail"})
+	for _, e := range events {
+		_ = writer.Write([]string{
+			e.Time.Format(time.RFC3339),
+			sanitizeCSVField(e.Actor),
+			string(e.Role),
+			e.Action,
+			sanitizeCSVField(e.Target),
+			e.RemoteAddr,
+			sanitizeCSVField(e.Detail),
+		})
+	}
 }
 
 func (s *Server) handleGetWorkers(w http.ResponseWriter, r *http.Request) {
@@ -725,7 +770,8 @@ func (s *Server) handleGetWorkers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
-	if !s.requireRole(w, r, RoleAdmin) {
+	actor, ok := s.authorize(w, r, RoleAdmin)
+	if !ok {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxSmallBodyBytes)
@@ -738,7 +784,11 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid worker status"}`, http.StatusBadRequest)
 		return
 	}
-	s.store.RegisterWorker(wrk)
+	if s.store.RegisterWorker(wrk) {
+		// Only first sightings are logged; re-registration after a control
+		// plane restart is routine and would flood the audit log.
+		s.store.RecordAudit(actor, "worker_register", wrk.ID, clientIP(r), wrk.Hostname)
+	}
 	s.Broadcast("worker_registered", wrk)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "registered", "id": wrk.ID})
@@ -771,6 +821,7 @@ func (s *Server) handlePollWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var tags, targetNames []string
+	workerID := r.URL.Query().Get("worker_id")
 	tagsParam := r.URL.Query().Get("tags")
 	if tagsParam != "" {
 		tags = splitCSVParam(tagsParam)
@@ -785,10 +836,11 @@ func (s *Server) handlePollWorker(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
 			tags = req.Tags
 			targetNames = req.Targets
+			workerID = req.WorkerID
 		}
 	}
 
-	target, hasTask := s.store.ClaimPendingTarget(tags, targetNames)
+	target, hasTask := s.store.ClaimPendingTarget(workerID, tags, targetNames)
 	w.Header().Set("Content-Type", "application/json")
 	resp := WorkerPollResponse{
 		HasTask: hasTask,
@@ -823,4 +875,20 @@ func splitCSVParam(v string) []string {
 		}
 	}
 	return out
+}
+
+// leaseReaper periodically requeues drills whose worker vanished mid-run.
+func (s *Server) leaseReaper() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.alertStop:
+			return
+		case <-ticker.C:
+			for _, name := range s.store.RequeueExpiredClaims(s.cfg.LeaseTimeout) {
+				s.Broadcast("drill_requeued", map[string]string{"target": name})
+			}
+		}
+	}
 }

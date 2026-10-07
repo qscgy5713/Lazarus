@@ -25,8 +25,11 @@ const (
 	dbPassword = "lazarus"
 	dbName     = "lazarus_verify"
 
-	readyTimeout      = 90 * time.Second
-	readyPollInterval = time.Second
+	// defaultReadyTimeout leaves room for MySQL/MongoDB's two-phase
+	// bootstrap on a loaded host (several sandboxes starting in parallel on
+	// a small CI runner easily exceeds 90s).
+	defaultReadyTimeout = 3 * time.Minute
+	readyPollInterval   = time.Second
 	// readyStreak is how many consecutive successful probes mean the
 	// database is really up, not just mid-bootstrap. See ping().
 	readyStreak = 3
@@ -51,6 +54,9 @@ type Options struct {
 	Network        string
 	ReadOnlyRootfs bool
 	DropCaps       bool
+	// ReadyTimeout bounds how long to wait for the database to accept
+	// queries; zero means defaultReadyTimeout.
+	ReadyTimeout time.Duration
 }
 
 // Start launches a container for engine using image and waits until the
@@ -127,7 +133,11 @@ func StartWithOptions(ctx context.Context, engine config.Engine, image string, o
 
 	s := &Sandbox{Name: name, Engine: engine}
 
-	if err := s.waitReady(ctx); err != nil {
+	readyTimeout := opts.ReadyTimeout
+	if readyTimeout <= 0 {
+		readyTimeout = defaultReadyTimeout
+	}
+	if err := s.waitReady(ctx, readyTimeout); err != nil {
 		// Leaving a half-started container behind would leak resources on
 		// every failed run, so tear it down before reporting the failure.
 		s.Stop()
@@ -178,7 +188,7 @@ func (s *Sandbox) LogsTail(ctx context.Context, lines int) string {
 	return strings.TrimSpace(string(out))
 }
 
-func (s *Sandbox) waitReady(ctx context.Context) error {
+func (s *Sandbox) waitReady(ctx context.Context, readyTimeout time.Duration) error {
 	deadline := time.Now().Add(readyTimeout)
 	var lastErr error
 	consecutive := 0

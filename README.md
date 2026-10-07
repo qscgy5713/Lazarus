@@ -329,7 +329,10 @@ targets:
       container: mysql-backups
       blob: azure-latest.sql.gz
       # account_key: "..."               # 亦可透過環境變數 AZURE_STORAGE_KEY 注入
+      # endpoint: http://127.0.0.1:10000/devstoreaccount1   # 選填：私有端點或 Azurite 模擬器
 ```
+
+GCS 同樣支援 `endpoint`（例如 `http://localhost:4443` 指向 fake-gcs-server）。帳號金鑰格式錯誤或 GCS 憑證檔無法讀取時會直接失敗並說明原因，不會退回匿名請求。
 
 #### 方式四：自訂 Shell 指令（`fetch_command`）
 
@@ -493,6 +496,8 @@ targets:
       timeout: 5m
 ```
 
+`command` 為必填；`trigger_on` 只接受 `failure` / `critical_drift`，打錯字會在載入設定時直接報錯（以前會默默永遠不觸發）。
+
 處置腳本執行時會自動注入演練環境變數（`$LAZARUS_TARGET`, `$LAZARUS_STAGE`, `$LAZARUS_ERROR`, `$LAZARUS_BACKUP_PATH` 等），並在稽核報告中記錄處置結果與耗時。
 
 ## 失敗通知
@@ -502,7 +507,7 @@ targets:
 ```yaml
 notify:
   format: slack        # slack | discord | telegram | teams | generic | lazarus | pagerduty | email
-  when: on_failure     # on_failure | always | never
+  when: on_failure     # on_failure（失敗或靠 fallback 才通過時）| always | never
 
   # 原生 Email (SMTP) HTML 彙整郵件通報（當 format: email 時啟用）
   # smtp:
@@ -577,8 +582,22 @@ targets:
 ./lazarus --config lazarus.yml --daemon --tag prod --interval 2h
 ```
 
+每個目標可以各自排程：
+
+```yaml
+targets:
+  - name: production-postgres
+    schedule: "0 4 * * *"   # 標準 5 欄位 cron（本機時區），也支援 @daily / @hourly / @weekly 等
+  - name: orders-mysql
+    interval: 6h            # 每 6 小時一次
+  - name: staging-sqlite    # 兩者都沒設：使用 --interval（預設 1h）
+```
+
+- `schedule` 與 `interval` 同時設定時以 `schedule` 為準（`--check-config` 會標示 interval 被忽略）。
+- `--interval` 只覆蓋「沒有 `schedule`」的目標，不會蓋掉明確的 cron 排程。
+
 守護進程特性：
-- **即時初次演練**：進程啟動時立即觸發首次完整演練，隨後依據定時器自動循環。
+- **即時初次演練**：以 `interval` 或預設間隔排程的目標在啟動時立即演練一次；以 `schedule` 排程的目標等到第一個符合的時間點才執行。
 - **優雅平滑關閉**：捕捉 `SIGINT` (Ctrl+C) 或 `SIGTERM` 信號，等待當前正在進行的 sandbox 還原或 check 斷言安全清理後乾淨退出。
 - **持續通報整合**：每次循環依據 `notify` 策略自動向 Slack、Discord、Email 或 Control Plane 心跳回報。
 
@@ -589,6 +608,8 @@ targets:
 當最新的一份備份損毀（檔案截斷、GPG 損壞或校驗失敗）時，一般備份工具只會回報失敗。Lazarus 支援自動往前回退歷史備份（最多嘗試 `max_fallback_depth` 份）：
 - 若回退的歷史備份還原並檢驗成功，演練將標記為 `FALLBACK PASS`。
 - 精確計算出**真實可復原時間點差距 (Actual RPO)**，告知團隊「若現在發生真實災難，最近可救回的資料停留在多久之前」。
+- **最新備份壞掉仍會通知**：即使 fallback 成功、整體算通過，`when: on_failure` 也會發出「⚠️ 最新備份已損毀、改用較舊備份還原」的通知（PagerDuty 為 `warning` 等級），附上實際 RPO。
+- fallback 成功時，RPO 判定使用 fallback 那份備份的結果；size drift 的基準不會被較舊備份的大小覆蓋。
 
 ```yaml
 targets:
@@ -907,7 +928,28 @@ go build -o lazarus-server ./cmd/server
 | `GET /api/v1/targets`、`reports`、`summary`、`metrics/daily`、`stream`、`workers`、`export/csv`、`export/certificate.pdf` | ❌ 401 | ✅ | ✅ |
 | `POST /api/v1/reports`（回報演練結果）、`/api/v1/workers/register\|heartbeat\|poll`、`trigger`、`mute`/`unmute` | ❌ 401 | ❌ 403 | ✅ |
 
-> 回報演練結果是稽核證據，因此 CLI 的 `LAZARUS_API_KEY` 與 Worker 的 `--worker-token` 都必須使用 **admin** 金鑰。瀏覽器下載 CSV/PDF 與 SSE 無法帶 header，Web 控制台會改以 `?api_key=` 查詢參數附帶 Token。
+> 回報演練結果是稽核證據，因此 CLI 的 `LAZARUS_API_KEY` 與 Worker 的 `--worker-token` 都必須使用 **admin** 金鑰。
+
+其他 Control Plane 參數：
+- `-users-file`：具名使用者檔（環境變數 `USERS_FILE`），讓操作紀錄能記到「哪個人」而不只是哪把共用金鑰：
+
+  ```yaml
+  users:
+    - name: alice
+      role: admin
+      key_sha256: 2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b  # echo -n '<key>' | shasum -a 256
+    - name: auditor
+      role: viewer
+      key: plain-text-key   # 也可直接放明文，但建議用 key_sha256
+  ```
+- `-history-limit`：每個目標保留的演練歷史筆數（預設 1000）。
+- `-retention`：演練歷史與操作紀錄的保留期間（預設 `9600h` = 400 天，環境變數 `RETENTION`）。重啟後完整保留；僅最新 20 筆保留容器日誌以控制檔案大小，CSV 匯出包含全部保留期間的紀錄與 `ReportedBy` 欄位。
+- `-lease-timeout`：Worker 認領任務後的租約上限（預設 `2h`，環境變數 `LEASE_TIMEOUT`）。Worker 超過 60 秒沒有心跳（例如演練途中崩潰）或租約逾時，任務會自動重新排回佇列並記入操作紀錄。
+
+安全機制：
+- **Web 登入改用 session cookie**：`POST /api/v1/auth/login` 換取 HttpOnly、SameSite=Strict 的 session（12 小時），金鑰不再存放在瀏覽器 localStorage 或出現在網址上；以 cookie 驗證的寫入請求必須帶 `X-Lazarus-CSRF` header。`?api_key=` 查詢參數仍保留給既有腳本相容使用。
+- **暴力破解防護**：同一 IP 在 1 分鐘內驗證失敗 10 次會被封鎖 1 分鐘（回 429）。只計算 TCP 對端位址，不信任 `X-Forwarded-For`；放在反向代理後方時請由代理層做限流。
+- **操作紀錄**：登入、登入失敗、觸發、靜音/解除靜音、新 Worker 註冊、租約重派都會記錄到 `GET /api/v1/audit` 與 `GET /api/v1/export/audit.csv`，Web 控制台的「🧾 Audit Log」可直接檢視。
 
 ### 分散式 Worker 邊緣節點模式啟動 (Worker Mode)
 
@@ -1041,11 +1083,20 @@ make test        # 執行全庫單元測試
 make test-race   # 執行包含並行競爭檢測 (-race) 之全庫測試
 make lint        # 執行靜態程式碼分析 (go vet)
 make fmt         # 自動排版 Go 程式碼 (gofmt)
+make e2e         # 執行 Docker 端到端測試（見下方）
 make docker      # 建置 lazarus 與 lazarus-server 之 Docker 映像檔
 make clean       # 清理本機編譯產物
 ```
 
 PostgreSQL / MySQL / Redis 的端對端測試需要 Docker，會實際起容器、產生真實的 dump 再還原——這個工具的核心價值就是「真的跑一次」，所以驗證方式也一樣。SQLite 不需要 Docker，`go test` 裡就有跑真正的 `sqlite3` CLI、真的資料庫檔案的端對端測試（本機沒裝 `sqlite3` 會自動跳過）。
+
+`make e2e`（[`test/e2e/run.sh`](test/e2e/run.sh)）是完整的端到端測試，每次 push 也會在 GitHub Actions 的 E2E 工作流程執行：
+- 從真實的 PostgreSQL / MySQL / Redis / MongoDB 容器產生備份（plain SQL、`pg_dump -Fc`、RDB、mongodump archive），加上 SQLite、GPG 與 age 加密版本
+- 透過 S3 相容伺服器（versitygw，會驗證 SigV4 簽章）、fake-gcs-server、Azurite 實際下載備份
+- 一個刻意的 schema-only 陷阱必須失敗；hooks、remediation、增量補丁、chaos + fallback、`cleanup_backup` 都會驗證
+- Control Plane RBAC、具名使用者歸屬、操作紀錄；Worker 調度、演練途中 `kill -9` 後的租約重派；開著 SSE 時的優雅關機
+
+需要 `docker`、`go`、`sqlite3`、`gpg`、`age`、`curl`、`python3`；`E2E_SKIP_MONGO=1` 可略過 MongoDB（映像約 700MB）。
 
 ### 發布
 

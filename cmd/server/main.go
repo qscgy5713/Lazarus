@@ -28,6 +28,10 @@ func main() {
 	alertWebhook := flag.String("alert-webhook", os.Getenv("ALERT_WEBHOOK_URL"), "Webhook URL for Dead Man's Snitch overdue alerts")
 	alertFormat := flag.String("alert-format", getEnvOrDefault("ALERT_FORMAT", "slack"), "Alert format: slack, discord, teams")
 	alertIntervalStr := flag.String("alert-interval", getEnvOrDefault("ALERT_INTERVAL", "10m"), "Interval for checking overdue alerts")
+	usersFile := flag.String("users-file", os.Getenv("USERS_FILE"), "YAML file of named admin/viewer keys for per-user audit attribution")
+	historyLimit := flag.Int("history-limit", 1000, "drill history records retained per target")
+	retentionStr := flag.String("retention", getEnvOrDefault("RETENTION", "9600h"), "drop drill history and audit events older than this (default 400 days)")
+	leaseStr := flag.String("lease-timeout", getEnvOrDefault("LEASE_TIMEOUT", "2h"), "requeue a worker-claimed drill not reported within this long")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -50,6 +54,21 @@ func main() {
 		log.Fatalf("invalid alert interval %q: %v", *alertIntervalStr, err)
 	}
 
+	retention, err := time.ParseDuration(*retentionStr)
+	if err != nil {
+		log.Fatalf("invalid retention %q: %v", *retentionStr, err)
+	}
+	leaseTimeout, err := time.ParseDuration(*leaseStr)
+	if err != nil {
+		log.Fatalf("invalid lease timeout %q: %v", *leaseStr, err)
+	}
+	var users []server.User
+	if *usersFile != "" {
+		if users, err = server.LoadUsers(*usersFile); err != nil {
+			log.Fatalf("%v", err)
+		}
+	}
+
 	srv := server.New(server.Config{
 		Addr:             *addr,
 		APIKey:           *apiKey,
@@ -61,6 +80,10 @@ func main() {
 		AlertWebhookURL:  *alertWebhook,
 		AlertFormat:      *alertFormat,
 		AlertInterval:    alertInterval,
+		Users:            users,
+		HistoryLimit:     *historyLimit,
+		Retention:        retention,
+		LeaseTimeout:     leaseTimeout,
 	})
 
 	fmt.Println("==========================================================")
@@ -75,8 +98,8 @@ func main() {
 	if *demoMode {
 		fmt.Println("   Demo Mode     : Active (Preloaded sample drill records)")
 	}
-	if *apiKey != "" || *adminKey != "" || *viewerKey != "" {
-		fmt.Println("   Authentication: Enabled (X-Lazarus-Key / Bearer Token)")
+	if *apiKey != "" || *adminKey != "" || *viewerKey != "" || len(users) > 0 {
+		fmt.Printf("   Authentication: Enabled (%d named user(s); Bearer / X-Lazarus-Key / session cookie)\n", len(users))
 	} else {
 		fmt.Println("   Authentication: Open (No API Key set)")
 	}

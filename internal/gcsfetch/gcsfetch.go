@@ -75,9 +75,12 @@ func (d *Downloader) Download(ctx context.Context, cfg *config.GCSConfig, destPa
 
 	if cfg.CredentialsFile != "" {
 		token, err := getAccessToken(ctx, d.client, cfg.CredentialsFile)
-		if err == nil && token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
+		if err != nil {
+			// Falling back to an anonymous request would hide the real
+			// problem behind a generic 401/403 from GCS.
+			return fmt.Errorf("gcs credentials: %w", err)
 		}
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	resp, err := d.client.Do(req)

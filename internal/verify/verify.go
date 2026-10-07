@@ -6,6 +6,7 @@ package verify
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -234,6 +235,9 @@ func RunWithProgress(ctx context.Context, target config.Target, baseline int64, 
 
 	if target.GCS != nil {
 		downloader := gcsfetch.New()
+		if target.GCS.Endpoint != "" {
+			downloader.WithBaseURL(target.GCS.Endpoint)
+		}
 		if isTerminal(os.Stderr) {
 			downloader.ProgressWriter = os.Stderr
 		}
@@ -245,6 +249,9 @@ func RunWithProgress(ctx context.Context, target config.Target, baseline int64, 
 
 	if target.Azure != nil {
 		downloader := azurefetch.New()
+		if target.Azure.Endpoint != "" {
+			downloader.WithBaseURL(target.Azure.Endpoint)
+		}
 		if isTerminal(os.Stderr) {
 			downloader.ProgressWriter = os.Stderr
 		}
@@ -397,6 +404,7 @@ func executeSingleDrill(
 		CPUs:           target.CPUs,
 		Network:        target.Network,
 		ReadOnlyRootfs: target.ReadOnlyRootfs,
+		ReadyTimeout:   target.ReadyTimeout,
 	}
 
 	if target.Engine == config.EngineSQLite {
@@ -733,7 +741,9 @@ func RunAllWithProgress(ctx context.Context, targets []config.Target, st *state.
 			result := RunWithProgress(ctx, target, baseline, hasBaseline, keepOnFailure, gpgPassphrase, onProgress)
 			results[i] = result
 
-			if result.Passed && result.Backup != nil {
+			// A fallback pass verified an older backup; recording its size
+			// would lower the drift baseline below the real newest backup.
+			if result.Passed && result.Backup != nil && !result.FallbackUsed {
 				st.Set(target.Name, state.TargetState{
 					LastSizeBytes: result.Backup.Size,
 					UpdatedAt:     time.Now(),
@@ -748,41 +758,56 @@ func RunAllWithProgress(ctx context.Context, targets []config.Target, st *state.
 
 // createCorruptedBackupCopy creates a disposable temporary copy of srcPath with
 // deliberate byte flips to simulate backup corruption for chaos drill testing.
-func createCorruptedBackupCopy(srcPath string, corruptBytes int) (string, error) {
-	data, err := os.ReadFile(srcPath)
+// The copy is streamed and only the corrupted window is touched in memory, so
+// multi-GB backups don't have to fit in RAM.
+func createCorruptedBackupCopy(srcPath string, corruptBytes int) (path string, err error) {
+	src, err := os.Open(srcPath)
 	if err != nil {
 		return "", err
 	}
-	if len(data) == 0 {
-		return "", fmt.Errorf("backup file is empty")
-	}
-
-	corrupted := make([]byte, len(data))
-	copy(corrupted, data)
-
-	if corruptBytes <= 0 {
-		corruptBytes = 64
-	}
-	n := min(corruptBytes, len(corrupted))
-	offset := 0
-	if len(corrupted) > 32 {
-		offset = 16
-	}
-	for i := 0; i < n && (offset+i) < len(corrupted); i++ {
-		corrupted[offset+i] ^= 0xFF
-	}
+	defer src.Close()
 
 	tmpFile, err := os.CreateTemp("", "lazarus-chaos-*"+filepath.Ext(srcPath))
 	if err != nil {
 		return "", err
 	}
 	tmpPath := tmpFile.Name()
-	if _, err := tmpFile.Write(corrupted); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
+	defer func() {
+		if cerr := tmpFile.Close(); err == nil && cerr != nil {
+			err = cerr
+		}
+		if err != nil {
+			_ = os.Remove(tmpPath)
+			path = ""
+		}
+	}()
+
+	size, err := io.Copy(tmpFile, src)
+	if err != nil {
 		return "", err
 	}
-	_ = tmpFile.Close()
+	if size == 0 {
+		return "", fmt.Errorf("backup file is empty")
+	}
+
+	if corruptBytes <= 0 {
+		corruptBytes = 64
+	}
+	var offset int64
+	if size > 32 {
+		offset = 16
+	}
+	n := min(int64(corruptBytes), size-offset)
+	window := make([]byte, n)
+	if _, err := tmpFile.ReadAt(window, offset); err != nil {
+		return "", err
+	}
+	for i := range window {
+		window[i] ^= 0xFF
+	}
+	if _, err := tmpFile.WriteAt(window, offset); err != nil {
+		return "", err
+	}
 	return tmpPath, nil
 }
 

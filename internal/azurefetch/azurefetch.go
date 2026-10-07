@@ -64,9 +64,9 @@ func (d *Downloader) Download(ctx context.Context, cfg *config.AzureConfig, dest
 	cleanBlob := strings.TrimPrefix(cfg.Blob, "/")
 	var reqURL string
 	if d.baseURL != "" {
-		reqURL = fmt.Sprintf("%s/%s/%s", d.baseURL, url.PathEscape(cfg.Container), url.PathEscape(cleanBlob))
+		reqURL = fmt.Sprintf("%s/%s/%s", d.baseURL, url.PathEscape(cfg.Container), escapeBlobPath(cleanBlob))
 	} else {
-		reqURL = fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", cfg.AccountName, url.PathEscape(cfg.Container), url.PathEscape(cleanBlob))
+		reqURL = fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", cfg.AccountName, url.PathEscape(cfg.Container), escapeBlobPath(cleanBlob))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
@@ -80,17 +80,22 @@ func (d *Downloader) Download(ctx context.Context, cfg *config.AzureConfig, dest
 
 	if cfg.AccountKey != "" {
 		keyBytes, err := base64.StdEncoding.DecodeString(cfg.AccountKey)
-		if err == nil {
-			canonicalizedHeaders := fmt.Sprintf("x-ms-date:%s\nx-ms-version:2020-10-02", now)
-			canonicalizedResource := fmt.Sprintf("/%s/%s/%s", cfg.AccountName, cfg.Container, cleanBlob)
-			stringToSign := fmt.Sprintf("GET\n\n\n\n\n\n\n\n\n\n\n\n%s\n%s", canonicalizedHeaders, canonicalizedResource)
-
-			h := hmac.New(sha256.New, keyBytes)
-			h.Write([]byte(stringToSign))
-			signature := base64.StdEncoding.EncodeToString(h.Sum(nil))
-
-			req.Header.Set("Authorization", fmt.Sprintf("SharedKey %s:%s", cfg.AccountName, signature))
+		if err != nil {
+			// Sending the request unsigned would only surface as a baffling 403.
+			return fmt.Errorf("azure account_key is not valid base64: %w", err)
 		}
+		canonicalizedHeaders := fmt.Sprintf("x-ms-date:%s\nx-ms-version:2020-10-02", now)
+		// The canonicalized resource is the account plus the request's
+		// encoded URI path, which also covers path-style endpoints such as
+		// Azurite (/account/account/container/blob) and escaped blob names.
+		canonicalizedResource := "/" + cfg.AccountName + req.URL.EscapedPath()
+		stringToSign := fmt.Sprintf("GET\n\n\n\n\n\n\n\n\n\n\n\n%s\n%s", canonicalizedHeaders, canonicalizedResource)
+
+		h := hmac.New(sha256.New, keyBytes)
+		h.Write([]byte(stringToSign))
+		signature := base64.StdEncoding.EncodeToString(h.Sum(nil))
+
+		req.Header.Set("Authorization", fmt.Sprintf("SharedKey %s:%s", cfg.AccountName, signature))
 	}
 
 	resp, err := d.client.Do(req)
@@ -185,4 +190,14 @@ func (pt *progressTracker) Write(p []byte) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// escapeBlobPath escapes each segment of a virtual-directory blob name,
+// keeping the "/" separators literal as Azure expects.
+func escapeBlobPath(blob string) string {
+	parts := strings.Split(blob, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return strings.Join(parts, "/")
 }

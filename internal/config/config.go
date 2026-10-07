@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"lazarus/internal/schedule"
 )
 
 type Engine string
@@ -179,13 +181,19 @@ type Target struct {
 	// MemoryLimit sets the container memory limit (e.g. "512m", "2g").
 	MemoryLimit string `yaml:"memory_limit"`
 
+	// ReadyTimeout caps how long to wait for the sandbox database to accept
+	// queries before failing the target (default 3m).
+	ReadyTimeout time.Duration `yaml:"ready_timeout"`
+
 	// CPUs sets the container CPU quota (e.g. "1.5", "2").
 	CPUs string `yaml:"cpus"`
 
 	// Tags allows categorizing and filtering targets (e.g. ["prod", "us-east"]).
 	Tags []string `yaml:"tags"`
 
-	// Schedule is an optional cron expression (e.g. "0 4 * * *") for daemon mode.
+	// Schedule is an optional cron expression (e.g. "0 4 * * *", "@daily")
+	// for daemon mode, evaluated in local time. Takes precedence over
+	// Interval when both are set.
 	Schedule string `yaml:"schedule"`
 
 	// Interval is an optional duration interval (e.g. "24h") for daemon mode.
@@ -261,6 +269,9 @@ type GCSConfig struct {
 	Bucket          string `yaml:"bucket"`
 	Object          string `yaml:"object"`
 	CredentialsFile string `yaml:"credentials_file"`
+	// Endpoint overrides https://storage.googleapis.com (e.g. a private
+	// endpoint or fake-gcs-server for testing).
+	Endpoint string `yaml:"endpoint"`
 }
 
 // AzureConfig configures fetching a backup from Azure Blob Storage.
@@ -269,6 +280,9 @@ type AzureConfig struct {
 	Container   string `yaml:"container"`
 	Blob        string `yaml:"blob"`
 	AccountKey  string `yaml:"account_key"`
+	// Endpoint overrides https://<account>.blob.core.windows.net, e.g.
+	// "http://127.0.0.1:10000/devstoreaccount1" for Azurite.
+	Endpoint string `yaml:"endpoint"`
 }
 
 // S3Config configures direct backup retrieval from AWS S3, Cloudflare R2,
@@ -484,6 +498,12 @@ func (c *Config) applyDefaultsAndValidate() error {
 			return fmt.Errorf("target %q: unsupported engine %q (expected postgres, mysql, sqlite, redis or mongodb)", t.Name, t.Engine)
 		}
 
+		if t.Schedule != "" {
+			if _, err := schedule.Parse(t.Schedule); err != nil {
+				return fmt.Errorf("target %q: invalid schedule: %w", t.Name, err)
+			}
+		}
+
 		if t.FallbackOnFailure && t.MaxFallbackDepth <= 0 {
 			t.MaxFallbackDepth = 3
 		}
@@ -494,8 +514,17 @@ func (c *Config) applyDefaultsAndValidate() error {
 			t.HooksTimeout = 5 * time.Minute
 		}
 		if t.Remediation != nil {
+			if t.Remediation.Command == "" {
+				return fmt.Errorf("target %q: remediation.command is required", t.Name)
+			}
 			if t.Remediation.TriggerOn == "" {
 				t.Remediation.TriggerOn = "failure"
+			}
+			switch t.Remediation.TriggerOn {
+			case "failure", "critical_drift":
+			default:
+				// A typo here used to mean the playbook silently never ran.
+				return fmt.Errorf("target %q: remediation.trigger_on %q is not failure or critical_drift", t.Name, t.Remediation.TriggerOn)
 			}
 			if t.Remediation.Timeout <= 0 {
 				t.Remediation.Timeout = 5 * time.Minute

@@ -3,6 +3,10 @@ package azurefetch
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -87,5 +91,46 @@ func TestAzureDownloadNotFound(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("expected 'not found' in error, got %v", err)
+	}
+}
+
+// The SharedKey signature must cover the request's encoded path, so it holds
+// for path-style endpoints (Azurite) and blob names needing escaping.
+func TestSharedKeySignsEncodedPathStyleResource(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		sts := fmt.Sprintf("GET\n\n\n\n\n\n\n\n\n\n\n\nx-ms-date:%s\nx-ms-version:2020-10-02\n/acct%s", r.Header.Get("x-ms-date"), r.URL.EscapedPath())
+		kb, _ := base64.StdEncoding.DecodeString(key)
+		h := hmac.New(sha256.New, kb)
+		h.Write([]byte(sts))
+		want := "SharedKey acct:" + base64.StdEncoding.EncodeToString(h.Sum(nil))
+		if r.Header.Get("Authorization") != want {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "out")
+	err := New().WithBaseURL(srv.URL+"/acct").Download(context.Background(), &config.AzureConfig{
+		AccountName: "acct", Container: "c", Blob: "dir/my dump.sql", AccountKey: key,
+	}, dest)
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if gotPath != "/acct/c/dir/my%20dump.sql" {
+		t.Errorf("path = %q, want segments escaped with literal /", gotPath)
+	}
+}
+
+func TestInvalidAccountKeyFailsFast(t *testing.T) {
+	err := New().WithBaseURL("http://127.0.0.1:1").Download(context.Background(), &config.AzureConfig{
+		AccountName: "a", Container: "c", Blob: "b", AccountKey: "not base64!!",
+	}, filepath.Join(t.TempDir(), "x"))
+	if err == nil || !strings.Contains(err.Error(), "base64") {
+		t.Fatalf("err = %v, want base64 error before any request", err)
 	}
 }

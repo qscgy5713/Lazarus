@@ -23,6 +23,7 @@ import (
 	"lazarus/internal/inspect"
 	"lazarus/internal/notify"
 	"lazarus/internal/report"
+	"lazarus/internal/schedule"
 	"lazarus/internal/state"
 	"lazarus/internal/ui"
 	"lazarus/internal/verify"
@@ -416,38 +417,114 @@ func runOnce(ctx context.Context, cfg *config.Config, targets []config.Target, s
 }
 
 func runDaemon(ctx context.Context, cfg *config.Config, targets []config.Target, st *state.State, keepOnFailure, asJSON, quiet, live bool, outputHTML string, overrideInterval time.Duration) {
-	dInterval := overrideInterval
-	if dInterval <= 0 {
-		// Check target-level intervals
-		for _, t := range targets {
-			if t.Interval > 0 && (dInterval <= 0 || t.Interval < dInterval) {
-				dInterval = t.Interval
-			}
-		}
-	}
-	if dInterval <= 0 {
-		dInterval = 1 * time.Hour
+	plans, defaultInterval := planDaemon(targets, overrideInterval, time.Now())
+
+	fmt.Printf("lazarus: daemon mode active — %d target(s) (Ctrl+C to stop)\n", len(targets))
+	for _, p := range plans {
+		fmt.Printf("  - %s: %s, next run %s\n", p.target.Name, p.describe(defaultInterval), p.next.Format("2006-01-02 15:04"))
 	}
 
-	fmt.Printf("lazarus: daemon mode active — scheduling %d target(s) every %s (Ctrl+C to stop)\n", len(targets), dInterval)
-
-	// First immediate run
-	fmt.Printf("[%s] lazarus: starting initial drill verification cycle...\n", time.Now().Format("2006-01-02 15:04:05"))
-	runOnce(ctx, cfg, targets, st, keepOnFailure, asJSON, quiet, live, outputHTML)
-
-	ticker := time.NewTicker(dInterval)
-	defer ticker.Stop()
-
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 	for {
+		wait := time.Until(earliest(plans))
+		if wait < 0 {
+			wait = 0
+		}
+		timer.Reset(wait)
+
 		select {
 		case <-ctx.Done():
 			fmt.Println("\nlazarus: daemon received shutdown signal, gracefully exiting...")
 			return
-		case t := <-ticker.C:
-			fmt.Printf("\n[%s] lazarus: starting scheduled drill verification cycle...\n", t.Format("2006-01-02 15:04:05"))
-			runOnce(ctx, cfg, targets, st, keepOnFailure, asJSON, quiet, live, outputHTML)
+		case now := <-timer.C:
+			var due []config.Target
+			for i := range plans {
+				if !plans[i].next.After(now) {
+					due = append(due, plans[i].target)
+					plans[i].advance(now, defaultInterval)
+				}
+			}
+			if len(due) == 0 {
+				continue
+			}
+			fmt.Printf("\n[%s] lazarus: starting drill verification for %d target(s)...\n", now.Format("2006-01-02 15:04:05"), len(due))
+			runOnce(ctx, cfg, due, st, keepOnFailure, asJSON, quiet, live, outputHTML)
 		}
 	}
+}
+
+// daemonPlan tracks when one target runs next. A target with a cron
+// schedule waits for its first slot; interval-driven targets run right away
+// and then every interval.
+type daemonPlan struct {
+	target   config.Target
+	cron     *schedule.Schedule
+	interval time.Duration
+	next     time.Time
+}
+
+func planDaemon(targets []config.Target, overrideInterval time.Duration, now time.Time) ([]daemonPlan, time.Duration) {
+	defaultInterval := overrideInterval
+	if defaultInterval <= 0 {
+		defaultInterval = time.Hour
+	}
+	plans := make([]daemonPlan, 0, len(targets))
+	for _, t := range targets {
+		p := daemonPlan{target: t, next: now}
+		switch {
+		case t.Schedule != "":
+			// Already validated by config.Load.
+			p.cron, _ = schedule.Parse(t.Schedule)
+			p.next = p.cron.Next(now)
+		case overrideInterval > 0:
+			p.interval = overrideInterval
+		case t.Interval > 0:
+			p.interval = t.Interval
+		}
+		plans = append(plans, p)
+	}
+	return plans, defaultInterval
+}
+
+func (p *daemonPlan) advance(now time.Time, defaultInterval time.Duration) {
+	switch {
+	case p.cron != nil:
+		p.next = p.cron.Next(now)
+	case p.interval > 0:
+		p.next = now.Add(p.interval)
+	default:
+		p.next = now.Add(defaultInterval)
+	}
+}
+
+func (p *daemonPlan) describe(defaultInterval time.Duration) string {
+	switch {
+	case p.cron != nil:
+		return "schedule " + p.target.Schedule
+	case p.interval > 0:
+		return "every " + p.interval.String()
+	default:
+		return "every " + defaultInterval.String()
+	}
+}
+
+// earliest returns the soonest next run; a schedule that can never fire
+// (zero time) is ignored.
+func earliest(plans []daemonPlan) time.Time {
+	var soonest time.Time
+	for _, p := range plans {
+		if p.next.IsZero() {
+			continue
+		}
+		if soonest.IsZero() || p.next.Before(soonest) {
+			soonest = p.next
+		}
+	}
+	if soonest.IsZero() {
+		return time.Now().Add(24 * time.Hour)
+	}
+	return soonest
 }
 
 func sendNotification(ctx context.Context, cfg config.Notify, results []verify.Result) {
@@ -508,7 +585,12 @@ func printConfigSummary(w io.Writer, cfg *config.Config, targets []config.Target
 		if len(t.Tags) > 0 {
 			fmt.Fprintf(w, "    tags: %s\n", strings.Join(t.Tags, ", "))
 		}
-		if t.Interval > 0 {
+		if t.Schedule != "" {
+			fmt.Fprintf(w, "    schedule: %s (daemon mode, local time)\n", t.Schedule)
+			if t.Interval > 0 {
+				fmt.Fprintf(w, "    interval: %s (ignored: schedule takes precedence)\n", t.Interval)
+			}
+		} else if t.Interval > 0 {
 			fmt.Fprintf(w, "    interval: %s\n", t.Interval)
 		}
 		fmt.Fprintf(w, "    checks: %d\n", len(t.Checks))
@@ -542,6 +624,7 @@ type configSummaryTargetJSON struct {
 	MaxAgeMs                int64    `json:"max_age_ms,omitempty"`
 	MaxRestoreDurationMs    int64    `json:"max_restore_duration_ms,omitempty"`
 	IntervalMs              int64    `json:"interval_ms,omitempty"`
+	Schedule                string   `json:"schedule,omitempty"`
 	SizeDriftMaxDecreasePct float64  `json:"size_drift_max_decrease_pct,omitempty"`
 	Checks                  int      `json:"checks"`
 }
@@ -576,6 +659,7 @@ func printConfigSummaryJSON(w io.Writer, cfg *config.Config, targets []config.Ta
 			MaxAgeMs:             t.MaxAge.Milliseconds(),
 			MaxRestoreDurationMs: t.MaxRestoreDuration.Milliseconds(),
 			IntervalMs:           t.Interval.Milliseconds(),
+			Schedule:             t.Schedule,
 			Checks:               len(t.Checks),
 		}
 		if t.S3 != nil {

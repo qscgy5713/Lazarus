@@ -137,14 +137,14 @@ func TestClaimPendingTargetOnlyClaimsWorkerTargets(t *testing.T) {
 
 	// A worker without tags used to claim any pending target, then drop it
 	// because the target wasn't in its local config.
-	if rec, ok := st.ClaimPendingTarget(nil, []string{"billing"}); ok {
+	if rec, ok := st.ClaimPendingTarget("w1", nil, []string{"billing"}); ok {
 		t.Fatalf("worker without 'orders' claimed %q", rec.Name)
 	}
-	rec, ok := st.ClaimPendingTarget(nil, []string{"billing", "orders"})
+	rec, ok := st.ClaimPendingTarget("w1", nil, []string{"billing", "orders"})
 	if !ok || rec.Name != "orders" {
 		t.Fatalf("claim = %v %v, want orders", rec, ok)
 	}
-	if _, ok := st.ClaimPendingTarget(nil, []string{"orders"}); ok {
+	if _, ok := st.ClaimPendingTarget("w1", nil, []string{"orders"}); ok {
 		t.Fatal("target claimed twice")
 	}
 }

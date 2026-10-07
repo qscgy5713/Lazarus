@@ -109,6 +109,10 @@
           <span>👷</span>
           <span id="workersCountLabel">Workers (0)</span>
         </button>
+        <button onclick="openAuditModal()" class="px-3 py-1.5 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 transition flex items-center space-x-1.5 shadow-sm" title="Operations audit log">
+          <span>🧾</span>
+          <span>Audit Log</span>
+        </button>
         <button id="authBtn" onclick="openAuthModal()" class="px-3 py-1.5 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 transition flex items-center space-x-1.5 shadow-sm" title="RBAC Authentication Status">
           <span id="authIcon">🔑</span>
           <span id="authLabel">Admin</span>
@@ -436,15 +440,40 @@
         <div class="space-y-1">
           <label class="block text-slate-300 font-semibold">API Key / Bearer Token</label>
           <input id="authTokenInput" type="password" placeholder="Enter Admin Key or Viewer Key..." class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 placeholder-slate-600 font-mono text-xs focus:outline-none focus:border-indigo-500 transition" />
-          <p class="text-[11px] text-slate-500">Stored safely in browser localStorage for this domain.</p>
+          <p class="text-[11px] text-slate-500">Exchanged for an HttpOnly session cookie (12h); the key itself is never stored in the browser.</p>
         </div>
       </div>
       <div class="pt-3 border-t border-slate-800 flex justify-end space-x-2 text-xs">
-        <button onclick="clearAuthToken()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 rounded-lg transition font-medium">Clear / Reset</button>
-        <button onclick="saveAuthToken()" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-semibold transition">Save &amp; Unlock</button>
+        <span id="authError" class="mr-auto self-center text-rose-400"></span>
+        <button onclick="clearAuthToken()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 rounded-lg transition font-medium">Sign out</button>
+        <button onclick="saveAuthToken()" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-semibold transition">Sign in</button>
       </div>
     </div>
   </div>
+
+  <!-- Operations Audit Log Modal -->
+  <div id="auditModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full max-h-[80vh] p-6 shadow-2xl flex flex-col space-y-4">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div>
+          <h3 class="font-bold text-lg text-white font-mono">🧾 Operations Audit Log</h3>
+          <p class="text-xs text-slate-400">Who triggered, muted or signed in — retained with drill history</p>
+        </div>
+        <button onclick="closeAuditModal()" class="text-slate-400 hover:text-white text-xl font-bold p-1">&times;</button>
+      </div>
+      <div class="overflow-y-auto flex-1">
+        <table class="w-full text-xs">
+          <thead class="text-slate-500 text-left"><tr><th class="py-1 pr-3">Time</th><th class="pr-3">Actor</th><th class="pr-3">Action</th><th class="pr-3">Target</th><th>Detail</th></tr></thead>
+          <tbody id="auditTableBody" class="font-mono text-slate-300"></tbody>
+        </table>
+      </div>
+      <div class="pt-3 border-t border-slate-800 flex justify-end text-xs">
+        <a href="/api/v1/export/audit.csv" download class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded transition">Export CSV</a>
+      </div>
+    </div>
+  </div>
+
+  <div id="toastContainer" class="fixed bottom-4 right-4 z-[60] space-y-2"></div>
 
   <script>
     let globalTargets = [];
@@ -452,39 +481,51 @@
     let currentTag = '';
     let currentDrawerTarget = null;
     let currentDrawerRawLogs = '';
-    let authToken = localStorage.getItem('lazarus_auth_token') || '';
+    // Keys used to live in localStorage; they are now exchanged for an
+    // HttpOnly session cookie. Any key left over is migrated once, then erased.
+    const legacyToken = (() => { try { return localStorage.getItem('lazarus_auth_token') || ''; } catch (e) { return ''; } })();
     let currentUserRole = 'admin';
     let globalWorkers = [];
 
     async function authFetch(url, options = {}) {
       options.headers = options.headers || {};
-      if (authToken) {
-        options.headers['Authorization'] = 'Bearer ' + authToken;
+      options.credentials = 'same-origin';
+      const method = (options.method || 'GET').toUpperCase();
+      if (method !== 'GET') {
+        // Required by the server for cookie-authenticated writes (CSRF guard).
+        options.headers['X-Lazarus-CSRF'] = '1';
       }
       const res = await fetch(url, options);
-      if (res.status === 401 || res.status === 403) {
-        if (options.method && options.method.toUpperCase() !== 'GET') {
-          alert('⚠️ Permission Denied: Admin role required for this action. Please click 🔑 Admin button to set your Admin Key.');
+      if (method !== 'GET') {
+        if (res.status === 401) {
+          showToast('Sign in required for this action.', 'error');
+          openAuthModal();
+        } else if (res.status === 403) {
+          showToast('Permission denied: admin role required.', 'error');
+        } else if (res.status === 429) {
+          showToast('Too many failed sign-in attempts. Try again in a minute.', 'error');
         }
       }
       return res;
     }
 
-    // EventSource and plain download links can't send an Authorization
-    // header, so the token rides along as ?api_key= (accepted by the server).
-    function withToken(url) {
-      if (!authToken) return url;
-      return url + (url.includes('?') ? '&' : '?') + 'api_key=' + encodeURIComponent(authToken);
+    function showToast(message, kind = 'info') {
+      const container = document.getElementById('toastContainer');
+      if (!container) return;
+      const el = document.createElement('div');
+      const color = kind === 'error'
+        ? 'bg-rose-950/90 border-rose-800 text-rose-200'
+        : 'bg-slate-900/95 border-slate-700 text-slate-200';
+      el.className = 'px-4 py-2.5 rounded-lg border text-xs shadow-xl ' + color;
+      el.textContent = message;
+      container.appendChild(el);
+      setTimeout(() => el.remove(), 4000);
     }
 
     function updateExportLinks() {
       const csvBtn = document.getElementById('exportCSVBtn');
       if (csvBtn) {
-        csvBtn.href = withToken('/api/v1/export/csv' + (currentTag ? '?tag=' + encodeURIComponent(currentTag) : ''));
-      }
-      const pdfBtn = document.getElementById('exportPDFBtn');
-      if (pdfBtn) {
-        pdfBtn.href = withToken('/api/v1/export/certificate.pdf');
+        csvBtn.href = '/api/v1/export/csv' + (currentTag ? '?tag=' + encodeURIComponent(currentTag) : '');
       }
     }
 
@@ -851,7 +892,9 @@
           ? `<button onclick="toggleMute(this.getAttribute('data-target'), false)" data-target="${safeName}" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">🔔 Unmute</button>`
           : `<button onclick="toggleMute(this.getAttribute('data-target'), true)" data-target="${safeName}" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 border border-slate-700 transition">🔕 Mute</button>`;
 
-        const triggerBtn = t.trigger_pending
+        const triggerBtn = t.claimed_by
+          ? `<span class="text-[11px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono animate-pulse" title="Leased by worker">⚙ Running on ${escapeHtml(t.claimed_by)}</span>`
+          : t.trigger_pending
           ? `<span class="text-[11px] px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-mono animate-pulse">⚡ Pending...</span>`
           : `<button onclick="triggerDrill(this.getAttribute('data-target'))" data-target="${safeName}" class="text-[11px] px-2 py-0.5 rounded bg-indigo-900/60 hover:bg-indigo-800 text-indigo-300 border border-indigo-700/60 transition flex items-center space-x-1"><span>⚡</span><span>Run Drill</span></button>`;
 
@@ -1284,7 +1327,8 @@
           const authLabel = document.getElementById('authLabel');
           const authBadge = document.getElementById('authCurrentRoleBadge');
           if (authLabel) {
-            authLabel.innerText = data.role === 'admin' ? 'Admin' : (data.role === 'viewer' ? 'Viewer' : 'Locked');
+            const roleLabel = data.role === 'admin' ? 'Admin' : (data.role === 'viewer' ? 'Viewer' : 'Locked');
+            authLabel.innerText = data.username && data.authenticated && data.auth_required ? roleLabel + ' · ' + data.username : roleLabel;
             authLabel.className = data.role === 'admin' ? 'text-indigo-300 font-bold' : 'text-amber-400 font-medium';
           }
           if (authBadge) {
@@ -1301,7 +1345,9 @@
 
     function openAuthModal() {
       const input = document.getElementById('authTokenInput');
-      if (input) input.value = authToken;
+      if (input) input.value = '';
+      const errEl = document.getElementById('authError');
+      if (errEl) errEl.textContent = '';
       checkAuthRole();
       document.getElementById('authModal').classList.remove('hidden');
     }
@@ -1310,34 +1356,70 @@
       document.getElementById('authModal').classList.add('hidden');
     }
 
-    function saveAuthToken() {
-      const input = document.getElementById('authTokenInput');
-      const val = (input ? input.value : '').trim();
-      authToken = val;
-      if (val) {
-        localStorage.setItem('lazarus_auth_token', val);
-      } else {
-        localStorage.removeItem('lazarus_auth_token');
-      }
+    async function login(token) {
+      const res = await fetch('/api/v1/auth/login', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token })
+      });
+      return res;
+    }
+
+    function refreshAll() {
       checkAuthRole();
-      closeAuthModal();
       updateExportLinks();
       initSSE();
       fetchData();
       fetchWorkers();
     }
 
-    function clearAuthToken() {
-      authToken = '';
-      localStorage.removeItem('lazarus_auth_token');
+    async function saveAuthToken() {
       const input = document.getElementById('authTokenInput');
+      const val = (input ? input.value : '').trim();
+      const errEl = document.getElementById('authError');
+      const res = await login(val);
       if (input) input.value = '';
-      checkAuthRole();
+      if (!res.ok) {
+        if (errEl) errEl.textContent = res.status === 429 ? 'Too many attempts, wait a minute.' : 'Invalid key.';
+        return;
+      }
       closeAuthModal();
-      updateExportLinks();
-      initSSE();
-      fetchData();
-      fetchWorkers();
+      refreshAll();
+    }
+
+    async function clearAuthToken() {
+      await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'same-origin' });
+      closeAuthModal();
+      refreshAll();
+    }
+
+    async function openAuditModal() {
+      document.getElementById('auditModal').classList.remove('hidden');
+      const tbody = document.getElementById('auditTableBody');
+      const res = await authFetch('/api/v1/audit?limit=200');
+      if (!res.ok) {
+        tbody.innerHTML = '<tr><td colspan="5" class="py-4 text-slate-500">Sign in to view the audit log.</td></tr>';
+        return;
+      }
+      const events = await res.json();
+      if (!events.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="py-4 text-slate-500">No operations recorded yet.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = events.map(e =>
+        '<tr class="border-t border-slate-800">' +
+          '<td class="py-1.5 pr-3 text-slate-500">' + escapeHtml(new Date(e.time).toLocaleString()) + '</td>' +
+          '<td class="pr-3">' + escapeHtml(e.actor) + ' <span class="text-slate-500">(' + escapeHtml(e.role || '-') + ')</span></td>' +
+          '<td class="pr-3 text-indigo-300">' + escapeHtml(e.action) + '</td>' +
+          '<td class="pr-3">' + escapeHtml(e.target || '') + '</td>' +
+          '<td class="text-slate-400">' + escapeHtml(e.detail || e.remote_addr || '') + '</td>' +
+        '</tr>'
+      ).join('');
+    }
+
+    function closeAuditModal() {
+      document.getElementById('auditModal').classList.add('hidden');
     }
 
     // Keyboard ESC listener
@@ -1348,6 +1430,7 @@
         closeTargetHistoryModal();
         closeWorkersModal();
         closeAuthModal();
+        closeAuditModal();
       }
     });
 
@@ -1356,7 +1439,7 @@
     function initSSE() {
       if (!window.EventSource) return;
       if (eventSource) eventSource.close();
-      const es = new EventSource(withToken('/api/v1/stream'));
+      const es = new EventSource('/api/v1/stream');
       eventSource = es;
       const dot = document.getElementById('sseDot');
       const label = document.getElementById('sseLabel');
@@ -1374,6 +1457,10 @@
       });
 
       es.addEventListener('drill_triggered', () => {
+        fetchData();
+      });
+
+      es.addEventListener('drill_requeued', () => {
         fetchData();
       });
 
@@ -1427,12 +1514,16 @@
       return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
     }
 
+    async function boot() {
+      if (legacyToken) {
+        try { localStorage.removeItem('lazarus_auth_token'); } catch (e) {}
+        await login(legacyToken);
+      }
+      refreshAll();
+    }
+
     initTheme();
-    checkAuthRole();
-    updateExportLinks();
-    fetchData();
-    fetchWorkers();
-    initSSE();
+    boot();
     setInterval(() => {
       fetchData();
       fetchWorkers();

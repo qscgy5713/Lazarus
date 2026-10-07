@@ -1,5 +1,29 @@
 # 工作日誌 (Worklog)
 
+## 2026-10-07（下午）- 補完剩餘缺口：排程、租約、稽核留存、具名使用者、E2E
+
+### 做什麼 (What)
+1. **`schedule` cron 排程**：新增 `internal/schedule`（標準 5 欄位與 `@daily` 等巨集，不引入第三方套件）；daemon 改為逐 target 排程（cron / interval / 預設），`schedule` 優先於 `interval`。
+2. **設定驗證**：`remediation.trigger_on` 只接受 `failure` / `critical_drift`，`command` 必填。
+3. **chaos 串流複製**：不再把整個備份讀進記憶體，只改動要破壞的位元組區段。
+4. **fallback 取捨**：靠 fallback 才通過時，`on_failure` 也會通知（PagerDuty 為 warning）；size drift 基準不再被舊備份覆蓋。
+5. **Worker 租約**：認領時記錄 `claimed_by` / `claimed_at`；worker 離線超過 60 秒或租約逾時（`-lease-timeout`，預設 2h）自動重派並寫入操作紀錄；回報到達時釋放租約。
+6. **稽核留存**：`-history-limit`（預設 1000 筆/target）、`-retention`（預設 400 天）；報告與操作紀錄也持久化，重啟不遺失；只有最新 20 筆保留容器日誌。
+7. **具名使用者與操作紀錄**：`-users-file`（支援 `key_sha256`）；登入、登入失敗、觸發、靜音、新 Worker、重派都記錄；新增 `/api/v1/audit`、`/api/v1/export/audit.csv` 與 UI「🧾 Audit Log」；演練歷史新增 `ReportedBy`。
+8. **登入安全**：Web 改用 HttpOnly + SameSite=Strict 的 session cookie，cookie 寫入需 `X-Lazarus-CSRF` header；同 IP 1 分鐘內失敗 10 次封鎖 1 分鐘；UI 以 toast 取代 `alert()`。
+9. **雲端來源**：GCS/Azure 新增 `endpoint`；修正 Azure 簽章（改用編碼後路徑，支援 path-style 與特殊字元 blob 名稱）、無效 account key 與 GCS 憑證錯誤不再靜默退回匿名請求；範例設定 `credentials_json` 更正為 `credentials_file`。
+10. **沙盒啟動逾時**：新增 `ready_timeout`，預設由 90 秒放寬到 3 分鐘。
+11. **E2E**：新增 `test/e2e/run.sh`、`make e2e` 與 GitHub Actions `E2E` 工作流程。
+
+### 遇到的問題與解法 (Issues & Solutions)
+- E2E 首次執行時，MySQL 與 MongoDB 沙盒在負載下超過寫死的 90 秒啟動上限 → 新增 `ready_timeout`，腳本也在做完備份後關閉來源資料庫。
+- Docker Hub 與 quay.io 的 MinIO 映像都無法匿名取得 → 改用同樣會驗證 SigV4 的 versitygw（`--nometa` 避開 macOS bind mount 不支援 xattr 的問題）。
+- 既有設定可能同時寫 `schedule` 與 `interval`（以前 `schedule` 沒有作用），直接報錯會讓升級後跑不起來 → 改為 `schedule` 優先，並在 `--check-config` 中標示。
+- 自我 code review 找到 4 個問題並修正：失效 cookie 被計入限流，導致重啟後使用者無法重新登入；匿名輪詢者的認領被立即重派；重啟後 worker 尚未重新註冊就被重派；未認領的 target 輸出 `claimed_at` 零值。
+
+### 不在本次範圍
+- SSO / OIDC 與多節點高可用：需要先決定身分提供者與資料庫架構。
+
 ## 2026-10-07 - 深度 Code Review 與全功能實測修正
 
 ### 做什麼 (What)

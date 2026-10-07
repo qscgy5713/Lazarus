@@ -15,31 +15,73 @@ type Store struct {
 	mu               sync.RWMutex
 	filePath         string
 	overdueThreshold time.Duration
+	historyLimit     int
+	retention        time.Duration
 	targets          map[string]*TargetRecord
 	reports          []InboundReport
 	workers          map[string]*WorkerRecord
+	audit            []AuditEvent
+	// started lets RequeueExpiredClaims give workers one heartbeat window
+	// to re-register after a restart (the worker registry isn't persisted).
+	started time.Time
 }
 
 type persistedState struct {
 	Targets []*TargetRecord `json:"targets"`
+	Reports []InboundReport `json:"reports,omitempty"`
+	Audit   []AuditEvent    `json:"audit,omitempty"`
 }
 
+// workerOfflineAfter is how long without a heartbeat before a worker is
+// considered offline (workers heartbeat every 10s).
+const workerOfflineAfter = 60 * time.Second
+
+const (
+	defaultHistoryLimit = 1000
+	defaultRetention    = 400 * 24 * time.Hour
+	// uiHistoryLen is how much history /api/v1/targets returns per target;
+	// the full retained history is served by the CSV export.
+	uiHistoryLen = 20
+	maxReports   = 50
+	maxAudit     = 20000
+)
+
 func NewStore(filePath string, overdueThreshold time.Duration) *Store {
+	return NewStoreWithRetention(filePath, overdueThreshold, 0, 0)
+}
+
+// NewStoreWithRetention is NewStore with explicit history caps; zero values
+// pick the defaults (1000 records per target, 400 days).
+func NewStoreWithRetention(filePath string, overdueThreshold time.Duration, historyLimit int, retention time.Duration) *Store {
 	if overdueThreshold <= 0 {
 		overdueThreshold = 26 * time.Hour
+	}
+	if historyLimit <= 0 {
+		historyLimit = defaultHistoryLimit
+	}
+	if retention <= 0 {
+		retention = defaultRetention
 	}
 	s := &Store{
 		filePath:         filePath,
 		overdueThreshold: overdueThreshold,
+		historyLimit:     historyLimit,
+		retention:        retention,
 		targets:          make(map[string]*TargetRecord),
 		reports:          make([]InboundReport, 0),
 		workers:          make(map[string]*WorkerRecord),
+		started:          time.Now(),
 	}
 	s.load()
 	return s
 }
 
 func (s *Store) RecordReport(report InboundReport) {
+	s.RecordReportBy(report, "")
+}
+
+// RecordReportBy records a drill report submitted by reporter.
+func (s *Store) RecordReportBy(report InboundReport, reporter string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -51,8 +93,8 @@ func (s *Store) RecordReport(report InboundReport) {
 	}
 
 	s.reports = append(s.reports, report)
-	if len(s.reports) > 50 {
-		s.reports = s.reports[len(s.reports)-50:]
+	if len(s.reports) > maxReports {
+		s.reports = s.reports[len(s.reports)-maxReports:]
 	}
 
 	for _, res := range report.Results {
@@ -68,6 +110,10 @@ func (s *Store) RecordReport(report InboundReport) {
 		if len(res.Tags) > 0 {
 			rec.Tags = res.Tags
 		}
+
+		// The report closes any lease a worker held on this target.
+		rec.ClaimedBy = ""
+		rec.ClaimedAt = time.Time{}
 
 		rec.LastPassed = res.Passed
 		rec.LastDrilledAt = now
@@ -134,13 +180,79 @@ func (s *Store) RecordReport(report InboundReport) {
 			HasRPOCheck:               res.HasRPOCheck,
 			MaxRPOLagSec:              res.MaxRPOLagSec,
 			RPOViolated:               res.RPOViolated,
+			ReportedBy:                reporter,
 		})
-		if len(rec.RecentHistory) > 20 {
-			rec.RecentHistory = rec.RecentHistory[len(rec.RecentHistory)-20:]
-		}
+		s.pruneHistory(rec)
 	}
 
 	s.save()
+}
+
+// pruneHistory applies the count and age limits, and drops log tails from
+// all but the newest uiHistoryLen records so a year of history stays small.
+func (s *Store) pruneHistory(rec *TargetRecord) {
+	cutoff := time.Now().Add(-s.retention)
+	h := rec.RecentHistory
+	start := 0
+	for start < len(h) && h[start].DrilledAt.Before(cutoff) {
+		start++
+	}
+	if len(h)-start > s.historyLimit {
+		start = len(h) - s.historyLimit
+	}
+	h = h[start:]
+	for i := 0; i < len(h)-uiHistoryLen; i++ {
+		h[i].LogsTail = ""
+	}
+	rec.RecentHistory = h
+}
+
+// RecordAudit appends an operator action to the persisted audit log.
+func (s *Store) RecordAudit(actor Principal, action, target, remoteAddr, detail string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordAuditLocked(AuditEvent{
+		Time:       time.Now().UTC(),
+		Actor:      actor.Name,
+		Role:       actor.Role,
+		Action:     action,
+		Target:     target,
+		RemoteAddr: remoteAddr,
+		Detail:     detail,
+	})
+	s.save()
+}
+
+func (s *Store) recordAuditLocked(e AuditEvent) {
+	s.audit = append(s.audit, e)
+	s.pruneAuditLocked()
+}
+
+func (s *Store) pruneAuditLocked() {
+	cutoff := time.Now().Add(-s.retention)
+	start := 0
+	for start < len(s.audit) && s.audit[start].Time.Before(cutoff) {
+		start++
+	}
+	if len(s.audit)-start > maxAudit {
+		start = len(s.audit) - maxAudit
+	}
+	s.audit = s.audit[start:]
+}
+
+// GetAuditEvents returns the newest events first; limit <= 0 means all.
+func (s *Store) GetAuditEvents(limit int) []AuditEvent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := len(s.audit)
+	if limit > 0 && limit < n {
+		n = limit
+	}
+	out := make([]AuditEvent, 0, n)
+	for i := len(s.audit) - 1; i >= 0 && len(out) < n; i-- {
+		out = append(out, s.audit[i])
+	}
+	return out
 }
 
 func (s *Store) SetTargetMuted(name string, muted bool) error {
@@ -169,7 +281,8 @@ func (s *Store) TriggerTarget(name string) error {
 	return nil
 }
 
-func (s *Store) RegisterWorker(w WorkerRecord) {
+// RegisterWorker adds or refreshes a worker and reports whether it is new.
+func (s *Store) RegisterWorker(w WorkerRecord) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -177,7 +290,9 @@ func (s *Store) RegisterWorker(w WorkerRecord) {
 	if w.Status == "" {
 		w.Status = WorkerStatusOnline
 	}
+	_, existed := s.workers[w.ID]
 	s.workers[w.ID] = &w
+	return !existed
 }
 
 func (s *Store) HeartbeatWorker(id string, currentTask string, status WorkerStatus) bool {
@@ -209,8 +324,7 @@ func (s *Store) GetWorkers() []WorkerRecord {
 	now := time.Now().UTC()
 	out := make([]WorkerRecord, 0, len(s.workers))
 	for _, w := range s.workers {
-		// Mark workers without heartbeat for > 60s as offline
-		if now.Sub(w.LastHeartbeat) > 60*time.Second {
+		if now.Sub(w.LastHeartbeat) > workerOfflineAfter {
 			w.Status = WorkerStatusOffline
 			w.CurrentTask = ""
 		}
@@ -228,7 +342,7 @@ func (s *Store) GetWorkers() []WorkerRecord {
 // only run targets present in its own config, and claiming one it lacks
 // would silently drop the trigger. Otherwise workerTags (if any) must
 // intersect the target's tags.
-func (s *Store) ClaimPendingTarget(workerTags, targetNames []string) (*TargetRecord, bool) {
+func (s *Store) ClaimPendingTarget(workerID string, workerTags, targetNames []string) (*TargetRecord, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -263,12 +377,62 @@ func (s *Store) ClaimPendingTarget(workerTags, targetNames []string) (*TargetRec
 		}
 
 		rec.TriggerPending = false
+		rec.ClaimedBy = workerID
+		rec.ClaimedAt = time.Now().UTC()
 		s.save()
 		cloned := *rec
 		return &cloned, true
 	}
 
 	return nil, false
+}
+
+// RequeueExpiredClaims puts a claimed drill back in the queue when its
+// worker stopped heartbeating (crashed mid-drill) or the lease ran past
+// leaseTimeout. Without this a lost worker silently swallows the trigger.
+// It returns the requeued target names.
+func (s *Store) RequeueExpiredClaims(leaseTimeout time.Duration) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	var requeued []string
+	for _, rec := range s.targets {
+		if rec.ClaimedBy == "" && rec.ClaimedAt.IsZero() {
+			continue
+		}
+		reason := ""
+		w, known := s.workers[rec.ClaimedBy]
+		switch {
+		case leaseTimeout > 0 && now.Sub(rec.ClaimedAt) > leaseTimeout:
+			reason = "lease timed out"
+		case rec.ClaimedBy == "":
+			// Claimed by a poller that didn't identify itself: there's no
+			// heartbeat to watch, so only the lease timeout applies.
+		case !known:
+			if now.Sub(s.started) > workerOfflineAfter {
+				reason = "worker unknown"
+			}
+		case now.Sub(w.LastHeartbeat) > workerOfflineAfter:
+			reason = "worker offline"
+		}
+		if reason == "" {
+			continue
+		}
+		s.recordAuditLocked(AuditEvent{
+			Time: now, Actor: "system", Action: "requeue", Target: rec.Name,
+			Detail: fmt.Sprintf("claimed by %q: %s", rec.ClaimedBy, reason),
+		})
+		rec.ClaimedBy = ""
+		rec.ClaimedAt = time.Time{}
+		rec.TriggerPending = true
+		requeued = append(requeued, rec.Name)
+	}
+	if len(requeued) > 0 {
+		s.save()
+	}
+	sort.Strings(requeued)
+	return requeued
 }
 
 func hasTag(tags []string, targetTag string) bool {
@@ -301,6 +465,9 @@ func (s *Store) targetsFilteredLocked(tagFilter string) []*TargetRecord {
 		}
 		// Clone record to prevent mutating internal pointer
 		cloned := *rec
+		if n := len(cloned.RecentHistory); n > uiHistoryLen {
+			cloned.RecentHistory = cloned.RecentHistory[n-uiHistoryLen:]
+		}
 		if rec.Muted {
 			cloned.Status = StatusMuted
 		} else if s.overdueThreshold > 0 && now.Sub(rec.LastDrilledAt) > s.overdueThreshold {
@@ -522,8 +689,15 @@ func (s *Store) load() {
 		return
 	}
 	for _, t := range state.Targets {
+		s.pruneHistory(t)
 		s.targets[t.Name] = t
 	}
+	s.reports = state.Reports
+	if len(s.reports) > maxReports {
+		s.reports = s.reports[len(s.reports)-maxReports:]
+	}
+	s.audit = state.Audit
+	s.pruneAuditLocked()
 }
 
 func (s *Store) save() {
@@ -534,7 +708,8 @@ func (s *Store) save() {
 	for _, t := range s.targets {
 		targetsList = append(targetsList, t)
 	}
-	state := persistedState{Targets: targetsList}
+	sort.Slice(targetsList, func(i, j int) bool { return targetsList[i].Name < targetsList[j].Name })
+	state := persistedState{Targets: targetsList, Reports: s.reports, Audit: s.audit}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return

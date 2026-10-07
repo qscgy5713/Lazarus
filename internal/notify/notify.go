@@ -114,7 +114,9 @@ func (n *Notifier) ShouldSend(results []verify.Result) bool {
 	if n.when == WhenAlways {
 		return true
 	}
-	return anyFailed(results)
+	// A fallback recovery passes, but it means the newest backup is broken —
+	// exactly what on_failure exists to surface.
+	return anyFailed(results) || len(fallbackResults(results)) > 0
 }
 
 // Send delivers the summary. A delivery failure is returned rather than
@@ -219,6 +221,10 @@ func (n *Notifier) buildPagerDuty(results []verify.Result) pagerDutyPayload {
 	if !hasFailure {
 		severity = "info"
 		summary = fmt.Sprintf("Lazarus backup drill: all %d target(s) passed", len(results))
+		if fb := len(fallbackResults(results)); fb > 0 {
+			severity = "warning"
+			summary = fmt.Sprintf("Lazarus backup drill: latest backup broken for %d target(s), restored from older fallback", fb)
+		}
 	}
 
 	routingKey := n.apiKey
@@ -281,6 +287,8 @@ func buildSlack(results []verify.Result, dashboardURL string) slackPayload {
 	headerText := "✅ Lazarus: All Database Restorations Passed"
 	if failed {
 		headerText = "🚨 Lazarus: Database Restoration Verification Failed"
+	} else if len(fallbackResults(results)) > 0 {
+		headerText = "⚠️ Lazarus: Latest Backup Broken, Restored From Fallback"
 	}
 
 	blocks := []slackBlock{
@@ -641,6 +649,7 @@ func FormatMessage(results []verify.Result) string {
 		for _, r := range results {
 			fmt.Fprintf(&b, "\n• %s", r.Target)
 		}
+		writeFallbackNotes(&b, results)
 		return truncate(b.String())
 	}
 
@@ -654,7 +663,34 @@ func FormatMessage(results []verify.Result) string {
 			fmt.Fprintf(&b, "\n  backup: `%s`", r.Backup.Path)
 		}
 	}
+	writeFallbackNotes(&b, results)
 	return truncate(b.String())
+}
+
+// writeFallbackNotes lists targets that only passed by restoring an older
+// backup, with the data loss (RPO) that recovery would really cost.
+func writeFallbackNotes(b *strings.Builder, results []verify.Result) {
+	fb := fallbackResults(results)
+	if len(fb) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "\n⚠️ %d target(s) passed only via an older backup — the latest backup is broken:", len(fb))
+	for _, r := range fb {
+		fmt.Fprintf(b, "\n• *%s* restored from fallback (RPO %s)", r.Target, r.FallbackRPO.Round(time.Second))
+		if r.FallbackBackup != nil {
+			fmt.Fprintf(b, "\n  backup: `%s`", r.FallbackBackup.Path)
+		}
+	}
+}
+
+func fallbackResults(results []verify.Result) []verify.Result {
+	var out []verify.Result
+	for _, r := range results {
+		if r.Passed && r.FallbackUsed {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func failedResults(results []verify.Result) []verify.Result {

@@ -664,3 +664,22 @@ func TestLazarusPayloadCarriesControlPlaneFields(t *testing.T) {
 		t.Errorf("check RPO fields = %v", chk)
 	}
 }
+
+func TestFallbackRecoveryTriggersOnFailureNotification(t *testing.T) {
+	r := verify.Result{
+		Target: "orders", Passed: true, Stage: verify.StageDone,
+		FallbackUsed: true, FallbackRPO: 26 * time.Hour,
+		FallbackBackup: &backup.File{Path: "/b/orders-old.sql.gz"},
+	}
+	n := New("http://x", FormatSlack, WhenOnFailure)
+	if !n.ShouldSend([]verify.Result{r}) {
+		t.Fatal("on_failure should notify when the latest backup only passed via fallback")
+	}
+	if n.ShouldSend([]verify.Result{passing("ok")}) {
+		t.Fatal("plain success must not notify on_failure")
+	}
+	msg := FormatMessage([]verify.Result{r})
+	if !strings.Contains(msg, "latest backup is broken") || !strings.Contains(msg, "orders-old.sql.gz") {
+		t.Errorf("message lacks fallback details: %q", msg)
+	}
+}

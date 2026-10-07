@@ -75,19 +75,24 @@ type TargetRecord struct {
 	Status         TargetStatus `json:"status"`
 	Muted          bool         `json:"muted"`
 	TriggerPending bool         `json:"trigger_pending,omitempty"`
-	LastPassed     bool         `json:"last_passed"`
-	LastDrilledAt  time.Time    `json:"last_drilled_at"`
-	LastHostname   string       `json:"last_hostname,omitempty"`
-	LastStage      string       `json:"last_stage,omitempty"`
-	LastError      string       `json:"last_error,omitempty"`
-	LastBackupPath string       `json:"last_backup_path,omitempty"`
-	LastBackupSize string       `json:"last_backup_size,omitempty"`
-	LastBackupAge  string       `json:"last_backup_age,omitempty"`
-	LastDurationMs int64        `json:"last_duration_ms"`
-	LastRestoreMs  int64        `json:"last_restore_ms"`
-	LastLogsTail   string       `json:"last_logs_tail,omitempty"`
-	SLARTO         string       `json:"sla_rto,omitempty"`
-	SLARTOMs       int64        `json:"sla_rto_ms,omitempty"`
+	// ClaimedBy/ClaimedAt form the lease on a triggered drill: set when a
+	// worker claims it, cleared when its report arrives, and requeued if the
+	// worker goes offline or the lease times out.
+	ClaimedBy      string    `json:"claimed_by,omitempty"`
+	ClaimedAt      time.Time `json:"claimed_at,omitzero"`
+	LastPassed     bool      `json:"last_passed"`
+	LastDrilledAt  time.Time `json:"last_drilled_at"`
+	LastHostname   string    `json:"last_hostname,omitempty"`
+	LastStage      string    `json:"last_stage,omitempty"`
+	LastError      string    `json:"last_error,omitempty"`
+	LastBackupPath string    `json:"last_backup_path,omitempty"`
+	LastBackupSize string    `json:"last_backup_size,omitempty"`
+	LastBackupAge  string    `json:"last_backup_age,omitempty"`
+	LastDurationMs int64     `json:"last_duration_ms"`
+	LastRestoreMs  int64     `json:"last_restore_ms"`
+	LastLogsTail   string    `json:"last_logs_tail,omitempty"`
+	SLARTO         string    `json:"sla_rto,omitempty"`
+	SLARTOMs       int64     `json:"sla_rto_ms,omitempty"`
 	// SLAPassed is derived when targets are listed (never persisted as a
 	// stale verdict): healthy now AND last restore within the RTO, if set.
 	SLAPassed                 bool               `json:"sla_passed"`
@@ -124,6 +129,19 @@ type HistoryRecord struct {
 	HasRPOCheck               bool               `json:"has_rpo_check,omitempty"`
 	MaxRPOLagSec              float64            `json:"max_rpo_lag_seconds,omitempty"`
 	RPOViolated               bool               `json:"rpo_violated,omitempty"`
+	// ReportedBy is the authenticated principal that submitted this result.
+	ReportedBy string `json:"reported_by,omitempty"`
+}
+
+// AuditEvent records an operator or system action for compliance review.
+type AuditEvent struct {
+	Time       time.Time `json:"time"`
+	Actor      string    `json:"actor"`
+	Role       UserRole  `json:"role"`
+	Action     string    `json:"action"`
+	Target     string    `json:"target,omitempty"`
+	RemoteAddr string    `json:"remote_addr,omitempty"`
+	Detail     string    `json:"detail,omitempty"`
 }
 
 type Summary struct {

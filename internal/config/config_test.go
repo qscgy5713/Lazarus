@@ -822,3 +822,21 @@ targets:
 		t.Errorf("expected regex compilation error, got %v", err)
 	}
 }
+
+func TestScheduleAndRemediationValidation(t *testing.T) {
+	cases := map[string]string{
+		"bad cron":       "schedule: \"61 * * * *\"",
+		"bad trigger_on": "remediation:\n      command: echo hi\n      trigger_on: on_failure",
+		"empty command":  "remediation:\n      trigger_on: failure",
+	}
+	for name, extra := range cases {
+		path := filepath.Join(t.TempDir(), "lazarus.yml")
+		body := "targets:\n  - name: t\n    engine: sqlite\n    path: /x.db\n    " + extra + "\n    checks:\n      - {sql: \"SELECT 1\", expect_equal: 1}\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Errorf("%s: expected validation error", name)
+		}
+	}
+}

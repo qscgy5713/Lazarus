@@ -893,3 +893,29 @@ func TestFallbackSuccessReplacesPrimaryRPOVerdict(t *testing.T) {
 		t.Errorf("RPO verdict = has=%v lag=%v, want the fallback's (~5m)", res.HasRPOCheck, res.MaxRPOLag)
 	}
 }
+
+func TestFallbackPassDoesNotLowerSizeDriftBaseline(t *testing.T) {
+	requireSQLite(t)
+	dir := t.TempDir()
+	oldPath := sqliteBackup(t, dir, "s_old.db", 3)
+	old := time.Now().Add(-time.Hour)
+	_ = os.Chtimes(oldPath, old, old)
+	if err := os.WriteFile(filepath.Join(dir, "s_new.db"), []byte("corrupt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := state.New()
+	st.Set("drift", state.TargetState{LastSizeBytes: 999999})
+	targets := []config.Target{{
+		Name: "drift", Engine: config.EngineSQLite, Path: filepath.Join(dir, "s_*.db"),
+		FallbackOnFailure: true, MaxFallbackDepth: 1,
+		Checks: []config.Check{{Name: "users", SQL: "SELECT count(*) FROM users", Min: int64ptr(1)}},
+	}}
+	res := RunAll(context.Background(), targets, st, 1, false, "")
+	if !res[0].Passed || !res[0].FallbackUsed {
+		t.Fatalf("expected fallback pass, got %+v", res[0])
+	}
+	if ts, _ := st.Get("drift"); ts.LastSizeBytes != 999999 {
+		t.Errorf("baseline overwritten with fallback size %d", ts.LastSizeBytes)
+	}
+}

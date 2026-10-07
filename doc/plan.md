@@ -26,3 +26,23 @@
 4. CLI 分散式 Worker 實作：新增 `--worker`、`--control-plane`、`--worker-id`、`--worker-token` 旗標與輪詢 goroutine。
 5. Web 前端 UI：新增 Workers Modal、Auth Modal、Token 解鎖與權限提示。
 6. 全面測試與驗證：RBAC 權限測試、Worker 註冊與輪詢認領測試、Prometheus 指標校驗。
+
+## 驗收清單 (Acceptance Criteria)
+
+以具體、可驗證的條件判斷完成度，取代主觀百分比。✅ 表示已有自動化測試涵蓋（單元測試或 `make e2e`）。
+
+| # | 條件 | 狀態 | 驗證方式 |
+|---|------|------|----------|
+| 1 | 6 種資料庫（PostgreSQL plain/custom、MySQL、Redis、MongoDB、SQLite）的真實備份能還原並通過檢查 | ✅ | `make e2e` |
+| 2 | schema-only 等「還原成功但沒資料」的備份會被判定失敗 | ✅ | `make e2e` 陷阱 target |
+| 3 | GPG、age 加密備份可解密驗證，金鑰錯誤時明確失敗 | ✅ | `make e2e`、decrypt 單元測試 |
+| 4 | S3（驗證 SigV4）、GCS、Azure 來源可下載驗證，憑證錯誤時明確失敗 | ✅ | `make e2e`（versitygw / fake-gcs / Azurite） |
+| 5 | 最新備份損毀但 fallback 成功時仍會通知，並回報真實 RPO | ✅ | notify / verify 單元測試 |
+| 6 | 匿名者無法讀取資料；viewer 無法寫入或偽造報告 | ✅ | RBAC 端點矩陣測試、`make e2e` |
+| 7 | 每次觸發、靜音、登入都記錄到具名使用者，可匯出 CSV | ✅ | enterprise 測試、`make e2e` |
+| 8 | Worker 在演練途中當掉，任務會在約 75 秒內重派並由其他 worker 完成 | ✅ | `make e2e`（`kill -9`） |
+| 9 | Control Plane 重啟後，演練歷史與操作紀錄依保留期間完整保留 | ✅ | `TestHistoryRetentionPersistsAcrossRestart` |
+| 10 | Web 金鑰不存放在 localStorage 或網址；暴力破解會被限流 | ✅ | session / 限流測試、瀏覽器實測 |
+| 11 | daemon 依每個 target 的 cron 或 interval 排程 | ✅ | schedule / daemon 單元測試 |
+| 12 | SSO / OIDC 登入 | ❌ | 尚未實作 |
+| 13 | Control Plane 多節點高可用（共用資料庫） | ❌ | 尚未實作；目前為單節點 JSON 狀態檔 |

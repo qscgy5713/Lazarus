@@ -53,12 +53,15 @@ notify:
 # Control Plane & Distributed Worker Orchestration Settings:
 #
 # 1. Run Control Plane Server with RBAC:
-#    lazarus-server --addr=:8080 --admin-key="secret-admin" --viewer-key="secret-viewer"
+#    lazarus-server --addr=:8080 --admin-key="secret-admin" --viewer-key="secret-viewer" \
+#      --users-file=users.yml --retention=9600h --lease-timeout=2h
 #
 # 2. Run Distributed Drill Runner (Worker Mode):
 #    lazarus --worker --control-plane="http://control-plane.internal:8080" --worker-token="secret-admin" --interval=5s
 #    The worker automatically registers its hostname/tags, sends periodic heartbeats,
 #    and claims pending manual trigger drills from the central web console.
+#    It only claims targets present in its own config; a drill whose worker
+#    dies mid-run is requeued automatically.
 
 targets:
   - name: production-postgres
@@ -83,7 +86,8 @@ targets:
     # gcs:
     #   bucket: my-company-backups
     #   object: postgres/shop-latest.sql.gz
-    #   credentials_json: ""               # optional, falls back to GOOGLE_APPLICATION_CREDENTIALS env
+    #   credentials_file: ""               # optional, falls back to GOOGLE_APPLICATION_CREDENTIALS env
+    #   endpoint: ""                       # optional, e.g. http://localhost:4443 for fake-gcs-server
     #
     # Option C: Native Azure Blob Storage pull (No az CLI needed!)
     # azure:
@@ -91,6 +95,7 @@ targets:
     #   container: postgres-backups
     #   blob: shop-latest.sql.gz
     #   account_key: ""                    # optional, falls back to AZURE_STORAGE_KEY env
+    #   endpoint: ""                       # optional, e.g. http://127.0.0.1:10000/devstoreaccount1 for Azurite
     #
     # Option D: Shell fetch command (aws s3 cp, rclone, scp, ...)
     # fetch_command: aws s3 cp s3://my-backups/postgres/shop-latest.sql.gz /backups/postgres/shop-latest.sql.gz
@@ -120,6 +125,16 @@ targets:
     # the first time during an actual incident. Omit for no limit; the
     # duration is reported either way.
     max_restore_duration: 2h
+
+    # How long to wait for the sandbox database to accept queries (default
+    # 3m). Raise it on small CI runners that start several sandboxes at once.
+    # ready_timeout: 5m
+
+    # Daemon mode (--daemon) scheduling: a 5-field cron expression in local
+    # time (or @daily/@hourly/...), or a fixed interval. schedule wins if both
+    # are set.
+    # schedule: "0 4 * * *"
+    # interval: 24h
 
     # Enterprise SLA Recovery Time Objective (RTO) target. Tracked in Control Plane
     # dashboard and compliance audit certificate generation.

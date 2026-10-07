@@ -82,3 +82,15 @@ func TestGCSDownloadNotFound(t *testing.T) {
 		t.Errorf("expected 'not found' in error, got %v", err)
 	}
 }
+
+func TestUnreadableCredentialsFailInsteadOfAnonymous(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+	defer srv.Close()
+	err := New().WithBaseURL(srv.URL).Download(context.Background(), &config.GCSConfig{
+		Bucket: "b", Object: "o", CredentialsFile: filepath.Join(t.TempDir(), "missing.json"),
+	}, filepath.Join(t.TempDir(), "out"))
+	if err == nil || called {
+		t.Fatalf("err=%v called=%v; want credentials error and no anonymous request", err, called)
+	}
+}

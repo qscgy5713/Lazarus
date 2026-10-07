@@ -40,6 +40,11 @@ test-race: ## Run unit tests with race detector enabled
 	@echo "==> Running tests with race detector..."
 	go test -race ./...
 
+.PHONY: e2e
+e2e: ## Run the Docker-based end-to-end suite (needs docker, sqlite3, gpg, age)
+	@echo "==> Running end-to-end suite..."
+	./test/e2e/run.sh
+
 .PHONY: fmt
 fmt: ## Format Go source code with gofmt
 	@echo "==> Formatting code..."
