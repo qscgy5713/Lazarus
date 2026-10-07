@@ -127,6 +127,19 @@ func (s *Store) SetTargetMuted(name string, muted bool) error {
 	return nil
 }
 
+func (s *Store) TriggerTarget(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, exists := s.targets[name]
+	if !exists {
+		return fmt.Errorf("target %q not found", name)
+	}
+	rec.TriggerPending = true
+	s.save()
+	return nil
+}
+
 func (s *Store) GetTargets() []*TargetRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

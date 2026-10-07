@@ -185,7 +185,11 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 		defer cleanupRDB()
 
 		result.Stage = StageSandbox
-		sb, err := sandbox.StartWithMount(ctx, target.Engine, target.Image, rdbDir)
+		sb, err := sandbox.StartWithOptions(ctx, target.Engine, target.Image, sandbox.Options{
+			DataDir:     rdbDir,
+			MemoryLimit: target.MemoryLimit,
+			CPUs:        target.CPUs,
+		})
 		if err != nil {
 			result.Err = err
 			return
@@ -204,7 +208,10 @@ func Run(ctx context.Context, target config.Target, baseline int64, hasBaseline 
 		}
 	} else {
 		result.Stage = StageSandbox
-		sb, err := sandbox.Start(ctx, target.Engine, target.Image)
+		sb, err := sandbox.StartWithOptions(ctx, target.Engine, target.Image, sandbox.Options{
+			MemoryLimit: target.MemoryLimit,
+			CPUs:        target.CPUs,
+		})
 		if err != nil {
 			result.Err = err
 			return

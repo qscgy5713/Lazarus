@@ -40,19 +40,37 @@ type Sandbox struct {
 // where a UnixNano timestamp alone isn't guaranteed unique.
 var nameCounter atomic.Uint64
 
+// Options configures optional sandbox resource constraints and storage mounts.
+type Options struct {
+	DataDir     string
+	MemoryLimit string
+	CPUs        string
+}
+
 // Start launches a container for engine using image and waits until the
 // database inside it is accepting connections.
 func Start(ctx context.Context, engine config.Engine, image string) (*Sandbox, error) {
-	return StartWithMount(ctx, engine, image, "")
+	return StartWithOptions(ctx, engine, image, Options{})
 }
 
 // StartWithMount launches a container, optionally mounting a host directory to /data in the container.
 func StartWithMount(ctx context.Context, engine config.Engine, image, dataDir string) (*Sandbox, error) {
+	return StartWithOptions(ctx, engine, image, Options{DataDir: dataDir})
+}
+
+// StartWithOptions launches a container with fine-grained mounts and resource constraints.
+func StartWithOptions(ctx context.Context, engine config.Engine, image string, opts Options) (*Sandbox, error) {
 	name := fmt.Sprintf("lazarus-verify-%d-%d", time.Now().UnixNano(), nameCounter.Add(1))
 
 	args := []string{"run", "--detach", "--name", name, "--rm", "--network", "none"}
-	if dataDir != "" {
-		args = append(args, "-v", dataDir+":/data")
+	if opts.MemoryLimit != "" {
+		args = append(args, "--memory", opts.MemoryLimit)
+	}
+	if opts.CPUs != "" {
+		args = append(args, "--cpus", opts.CPUs)
+	}
+	if opts.DataDir != "" {
+		args = append(args, "-v", opts.DataDir+":/data")
 	}
 
 	switch engine {
@@ -69,6 +87,12 @@ func StartWithMount(ctx context.Context, engine config.Engine, image, dataDir st
 		)
 	case config.EngineRedis:
 		// Redis in sandbox runs with no auth
+	case config.EngineMongoDB:
+		args = append(args,
+			"--env", "MONGO_INITDB_ROOT_USERNAME="+dbUser,
+			"--env", "MONGO_INITDB_ROOT_PASSWORD="+dbPassword,
+			"--env", "MONGO_INITDB_DATABASE="+dbName,
+		)
 	default:
 		return nil, fmt.Errorf("unsupported engine %q", engine)
 	}
@@ -168,6 +192,11 @@ func (s *Sandbox) ping(ctx context.Context) error {
 		}
 	case config.EngineRedis:
 		args = []string{"redis-cli", "PING"}
+	case config.EngineMongoDB:
+		args = []string{
+			"mongosh", "--username", dbUser, "--password=" + dbPassword,
+			"--authenticationDatabase", "admin", "--quiet", "--eval", "db.adminCommand('ping')",
+		}
 	}
 
 	_, err := s.Exec(ctx, "", args...)

@@ -118,6 +118,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/targets", s.handleGetTargets)
 	s.mux.HandleFunc("POST /api/v1/targets/{name}/mute", s.handleMuteTarget)
 	s.mux.HandleFunc("POST /api/v1/targets/{name}/unmute", s.handleUnmuteTarget)
+	s.mux.HandleFunc("POST /api/v1/targets/{name}/trigger", s.handleTriggerTarget)
 	s.mux.HandleFunc("GET /api/v1/reports", s.handleGetReports)
 	s.mux.HandleFunc("GET /api/v1/summary", s.handleGetSummary)
 	s.mux.HandleFunc("GET /api/v1/export/csv", s.handleExportCSV)
@@ -254,6 +255,29 @@ func (s *Server) handleUnmuteTarget(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok","message":"target unmuted"}`))
+}
+
+func (s *Server) handleTriggerTarget(w http.ResponseWriter, r *http.Request) {
+	if !s.checkAuth(r) {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, `{"error":"target name required"}`, http.StatusBadRequest)
+		return
+	}
+	if err := s.store.TriggerTarget(name); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":  "triggered",
+		"target":  name,
+		"message": "drill triggered successfully",
+	})
 }
 
 func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {

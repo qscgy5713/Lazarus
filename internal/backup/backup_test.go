@@ -262,3 +262,19 @@ func TestDetectsZstdUnderneathEncryption(t *testing.T) {
 		t.Errorf("Compression = %q, want %q", got.Compression, CompressionZstd)
 	}
 }
+
+func TestDetectsMongoArchiveFromExtension(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "dump.archive.gz", []byte{0x1f, 0x8b, 0x08}, time.Now())
+
+	got, err := Locate(path)
+	if err != nil {
+		t.Fatalf("Locate() error = %v", err)
+	}
+	if !got.Compressed {
+		t.Error("Compressed = false, want true for dump.archive.gz")
+	}
+	if got.Format != FormatMongoArchive {
+		t.Errorf("Format = %q, want %q", got.Format, FormatMongoArchive)
+	}
+}

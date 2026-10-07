@@ -163,7 +163,7 @@ func TestLoadRejectsInvalidConfigs(t *testing.T) {
 		},
 		{
 			name:    "unsupported engine",
-			body:    "targets:\n  - name: a\n    engine: mongodb\n    path: /b.sql",
+			body:    "targets:\n  - name: a\n    engine: cassandra\n    path: /b.sql",
 			wantErr: "unsupported engine",
 		},
 		{
@@ -660,5 +660,74 @@ targets:
 	}
 	if !strings.Contains(err.Error(), "cannot configure both s3 and fetch_command") {
 		t.Errorf("error = %q, want mention of s3 and fetch_command conflict", err)
+	}
+}
+
+func TestLoadMongoDBDefaultImage(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: mongo-test
+    engine: mongodb
+    path: /backups/dump.archive
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Targets[0].Image != defaultMongoDBImage {
+		t.Errorf("mongodb image = %q, want %q", cfg.Targets[0].Image, defaultMongoDBImage)
+	}
+}
+
+func TestLoadResourceQuotas(t *testing.T) {
+	path := writeConfig(t, `
+targets:
+  - name: quota-test
+    engine: postgres
+    path: /backups/db.sql
+    memory_limit: 2g
+    cpus: "1.5"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Targets[0].MemoryLimit != "2g" {
+		t.Errorf("MemoryLimit = %q, want 2g", cfg.Targets[0].MemoryLimit)
+	}
+	if cfg.Targets[0].CPUs != "1.5" {
+		t.Errorf("CPUs = %q, want 1.5", cfg.Targets[0].CPUs)
+	}
+
+	// Invalid CPUs
+	badPath := writeConfig(t, `
+targets:
+  - name: bad-cpus
+    engine: postgres
+    path: /backups/db.sql
+    cpus: invalid
+`)
+	_, err = Load(badPath)
+	if err == nil || !strings.Contains(err.Error(), "cpus must be a valid number") {
+		t.Errorf("expected error about cpus, got %v", err)
+	}
+}
+
+func TestNotifyPagerDutyFormat(t *testing.T) {
+	path := writeConfig(t, `
+notify:
+  webhook_url: "https://events.pagerduty.com/v2/enqueue"
+  format: pagerduty
+targets:
+  - name: test-db
+    engine: sqlite
+    path: /backups/db.sqlite
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Notify.Format != "pagerduty" {
+		t.Errorf("format = %q, want pagerduty", cfg.Notify.Format)
 	}
 }

@@ -376,3 +376,61 @@ func TestSendTeamsFormat(t *testing.T) {
 		t.Errorf("teams sections missing failure detail; got %+v", payload.Sections)
 	}
 }
+
+func TestSendPagerDutyFormat(t *testing.T) {
+	var received []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	n := New(srv.URL, FormatPagerDuty, WhenAlways).WithAPIKey("pd-test-routing-key")
+	results := []verify.Result{
+		failing("orders-db", verify.StageChecks, "count mismatch"),
+	}
+
+	if err := n.Send(context.Background(), results); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	var payload pagerDutyPayload
+	if err := json.Unmarshal(received, &payload); err != nil {
+		t.Fatalf("unmarshal pagerduty payload: %v", err)
+	}
+
+	if payload.RoutingKey != "pd-test-routing-key" {
+		t.Errorf("RoutingKey = %q, want pd-test-routing-key", payload.RoutingKey)
+	}
+	if payload.EventAction != "trigger" {
+		t.Errorf("EventAction = %q, want trigger", payload.EventAction)
+	}
+	if payload.Payload.Severity != "critical" {
+		t.Errorf("Severity = %q, want critical", payload.Payload.Severity)
+	}
+	if !strings.Contains(payload.Payload.Summary, "1 target(s) failed") {
+		t.Errorf("Summary = %q, want mention of failure", payload.Payload.Summary)
+	}
+}
+
+func TestSendRetriesOnServerError(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 2 {
+			w.WriteHeader(http.StatusBadGateway) // 502
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	n := New(srv.URL, FormatSlack, WhenAlways)
+	err := n.Send(context.Background(), []verify.Result{passing("db")})
+	if err != nil {
+		t.Fatalf("Send() expected success after retry, got error: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want 2", attempts)
+	}
+}

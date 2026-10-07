@@ -103,6 +103,17 @@ func query(ctx context.Context, sb *sandbox.Sandbox, engine config.Engine, sql s
 			return "", fmt.Errorf("empty redis command")
 		}
 		args = append([]string{"redis-cli"}, parts...)
+	case config.EngineMongoDB:
+		expr := strings.TrimSpace(sql)
+		evalCode := fmt.Sprintf("const db = db.getSiblingDB('%s'); print(%s)", sandbox.DBName(), expr)
+		args = []string{
+			"mongosh",
+			"--username", sandbox.User(),
+			"--password=" + sandbox.Password(),
+			"--authenticationDatabase", "admin",
+			"--quiet",
+			"--eval", evalCode,
+		}
 	default:
 		return "", fmt.Errorf("unsupported engine %q", engine)
 	}

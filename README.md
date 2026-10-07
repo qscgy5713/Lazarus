@@ -200,11 +200,13 @@ notify: format=slack when=on_failure webhook=not set
 ```yaml
 targets:
   - name: production-postgres
-    engine: postgres                # postgres、mysql、sqlite 或 redis
+    engine: postgres                # postgres、mysql、sqlite、redis 或 mongodb
     # fetch_command: aws s3 cp ...   # 備份不在本機時才需要（見下方說明）
     path: /backups/shop-*.sql.gz    # 支援 glob，取最新的
     max_age: 26h                    # 超過這個年齡就算失敗
     max_restore_duration: 2h        # 還原本身超過這個時間就算失敗（見下方 RTO 說明）
+    # memory_limit: 2g              # 選用：限制 sandbox 記憶體，防止大備份 OOM
+    # cpus: "1.5"                   # 選用：限制 sandbox CPU 配額
     size_drift:
       max_decrease_pct: 50          # 比上次「完整通過」的備份小超過 50% 就算失敗（見下方說明）
     image: postgres:16-alpine       # sandbox 用的 image，要對應你的正式版本
@@ -380,7 +382,7 @@ LAZARUS_GPG_PASSPHRASE=your-passphrase lazarus --config lazarus.yml
 
 ```yaml
 notify:
-  format: slack        # slack | discord | telegram | teams | generic | lazarus
+  format: slack        # slack | discord | telegram | teams | generic | lazarus | pagerduty
   when: on_failure     # on_failure | always | never
 ```
 
@@ -390,11 +392,12 @@ Webhook URL 建議用環境變數給，不要寫進設定檔：
 LAZARUS_WEBHOOK_URL=https://hooks.slack.com/services/xxx ./lazarus --config lazarus.yml
 ```
 
-通知原生支援各平台的富文本排版：
+通知原生支援各平台的富文本排版，且在遭遇網路瞬斷或伺服器 5xx 錯誤時**自動進行 3 次指數退避重試**：
 - **Slack (Block Kit)**：具備標題 Header、狀態區塊與 Markdown 錯誤碼塊。
 - **Discord (Rich Embeds)**：通過時顯示綠色邊框 (`#2ecc71`)，失敗時顯示紅色邊框 (`#e74c3c`)，並逐條列出每個目標的還原耗時與錯誤階段。
 - **Telegram Bot**：原生 HTML 格式卡片，具備專屬狀態 Header 與 `<pre>` 等寬代碼區塊。
 - **Microsoft Teams**：MessageCard / Adaptive Card 格式，支援色彩飾條（綠/紅）與 Markdown 清單。
+- **PagerDuty (Events API v2)**：演練失敗時觸發 `critical` Incident，全部通過時可發送 `info` 狀態。
 
 失敗時的告警卡片格式長這樣：
 
@@ -526,6 +529,8 @@ docker compose run --rm --entrypoint sh \
 ### 核心功能
 
 - **全時態健康儀表板 (Health Overview)**：直觀掌握各資料庫目標最新狀態（`PASS` / `FAIL` / `OVERDUE` / `MUTED`）、備份大小變化趨勢與還原耗時。
+- **手動即時觸發演練 (On-Demand Drill Trigger)**：在 Web UI 目標卡片上一鍵點擊「⚡ Run Drill」或透過 API (`POST /api/v1/targets/{name}/trigger`) 即時觸發演練標記，支援手動驗收與即時輪詢。
+- **RTO 還原耗時歷史趨勢圖 (Historical RTO Sparkline)**：在各目標卡片內建純 SVG 輕量趨勢曲線圖，即時呈現過去數次演練之還原耗時波動與成功/失敗節點。
 - **維護模式與警報靜音 (Mute Alerts)**：當資料庫進行排程升級或停機維護時，可於 Web UI 或透過 API (`POST /api/v1/targets/{name}/mute`) 將目標一鍵切換為維護靜音模式，避免觸發誤報，並即時於狀態卡片與 Prometheus 指標同步。
 - **歷史演練審計清單一鍵匯出 CSV (`/api/v1/export/csv`)**：提供歷史還原演練紀錄的 CSV 格式一鍵下載，包含演練時間戳、資料庫名稱、還原耗時、各項 checks 驗證筆數與斷言結果，便於合規存檔與稽核檢驗。
 - **Dead Man's Snitch（逾期靜默失效偵測）**：傳統監控只在腳本報錯時發出警報，但如果 crontab 被誤刪、伺服器離線或備份腳本死當，監控系統根本收不到任何通知。Control Plane 在目標超過預期時間（預設 26 小時）未收到還原報告時，自動標記為 `OVERDUE` 並亮起警報（處於維護靜音中的目標除外）。

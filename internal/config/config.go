@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ const (
 	// copying that file somewhere disposable and querying it directly.
 	EngineSQLite Engine = "sqlite"
 	EngineRedis  Engine = "redis"
+	EngineMongoDB Engine = "mongodb"
 )
 
 type Config struct {
@@ -145,6 +147,12 @@ type Target struct {
 	// finishes to reclaim disk space (useful for pulled remote/S3 backups).
 	CleanupBackup bool `yaml:"cleanup_backup"`
 
+	// MemoryLimit sets the container memory limit (e.g. "512m", "2g").
+	MemoryLimit string `yaml:"memory_limit"`
+
+	// CPUs sets the container CPU quota (e.g. "1.5", "2").
+	CPUs string `yaml:"cpus"`
+
 	Checks []Check `yaml:"checks"`
 }
 
@@ -183,6 +191,7 @@ const (
 	defaultPostgresImage = "postgres:16-alpine"
 	defaultMySQLImage    = "mysql:8"
 	defaultRedisImage    = "redis:7-alpine"
+	defaultMongoDBImage  = "mongo:7.0"
 )
 
 const defaultStateFile = "lazarus-state.json"
@@ -290,10 +299,21 @@ func (c *Config) applyDefaultsAndValidate() error {
 			if t.Image == "" {
 				t.Image = defaultRedisImage
 			}
+		case EngineMongoDB:
+			if t.Image == "" {
+				t.Image = defaultMongoDBImage
+			}
 		case "":
-			return fmt.Errorf("target %q: engine is required (postgres, mysql, sqlite or redis)", t.Name)
+			return fmt.Errorf("target %q: engine is required (postgres, mysql, sqlite, redis or mongodb)", t.Name)
 		default:
-			return fmt.Errorf("target %q: unsupported engine %q (expected postgres, mysql, sqlite or redis)", t.Name, t.Engine)
+			return fmt.Errorf("target %q: unsupported engine %q (expected postgres, mysql, sqlite, redis or mongodb)", t.Name, t.Engine)
+		}
+
+		if t.CPUs != "" {
+			t.CPUs = strings.TrimSpace(t.CPUs)
+			if _, err := strconv.ParseFloat(t.CPUs, 64); err != nil {
+				return fmt.Errorf("target %q: cpus must be a valid number (e.g. \"1.5\"), got %q", t.Name, t.CPUs)
+			}
 		}
 
 		if t.SizeDrift != nil {
@@ -328,9 +348,9 @@ func (c *Config) applyNotifyDefaults() error {
 		c.Notify.Format = defaultNotifyFormat
 	}
 	switch c.Notify.Format {
-	case "slack", "discord", "telegram", "teams", "generic", "lazarus":
+	case "slack", "discord", "telegram", "teams", "generic", "lazarus", "pagerduty":
 	default:
-		return fmt.Errorf("notify.format %q is not slack, discord, telegram, teams, generic or lazarus", c.Notify.Format)
+		return fmt.Errorf("notify.format %q is not slack, discord, telegram, teams, generic, lazarus or pagerduty", c.Notify.Format)
 	}
 
 	if c.Notify.When == "" {

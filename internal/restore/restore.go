@@ -163,12 +163,21 @@ func restoreCommand(engine config.Engine, file *backup.File) ([]string, error) {
 		}
 		return []string{"redis-cli", "--pipe"}, nil
 
+	case config.EngineMongoDB:
+		return []string{
+			"mongorestore",
+			"--username=" + sandbox.User(),
+			"--password=" + sandbox.Password(),
+			"--authenticationDatabase=admin",
+			"--archive",
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported engine %q", engine)
 	}
 }
 
-// errorMarkers are the prefixes psql/pg_restore/mysql use for real problems.
+// errorMarkers are the prefixes psql/pg_restore/mysql/mongorestore use for real problems.
 // Matching whole lines (rather than searching anywhere) keeps a table or
 // column innocently named "error_log" from tripping this.
 var errorMarkers = []string{
@@ -177,6 +186,8 @@ var errorMarkers = []string{
 	"PANIC:",
 	"pg_restore: error:",
 	"ERROR ",
+	"Failed: ",
+	"error restoring ",
 }
 
 func findErrorLine(output string) string {

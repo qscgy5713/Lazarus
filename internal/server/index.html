@@ -277,6 +277,59 @@
       }
     }
 
+    async function triggerDrill(name) {
+      if (!name) return;
+      try {
+        const res = await fetch(`/api/v1/targets/${encodeURIComponent(name)}/trigger`, { method: 'POST' });
+        if (res.ok) {
+          fetchData();
+        }
+      } catch (err) {
+        console.error('Failed to trigger drill:', err);
+      }
+    }
+
+    function renderSparkline(history) {
+      if (!history || history.length < 2) return '';
+      const pts = history.slice(-8);
+      const values = pts.map(p => p.restore_ms || p.total_duration_ms || 1);
+      const maxVal = Math.max(...values, 1);
+      const minVal = Math.min(...values);
+      const w = 240, h = 34;
+      const pad = 6;
+      const step = (w - pad * 2) / (pts.length - 1);
+      const coords = pts.map((p, idx) => {
+        const v = p.restore_ms || p.total_duration_ms || 1;
+        const x = pad + idx * step;
+        const y = h - pad - ((v - minVal) / (maxVal - minVal || 1)) * (h - pad * 2);
+        return { x: x.toFixed(1), y: y.toFixed(1), passed: p.passed, val: v };
+      });
+
+      const polylinePts = coords.map(c => `${c.x},${c.y}`).join(' ');
+      const dots = coords.map(c => {
+        const col = c.passed ? '#10b981' : '#f43f5e';
+        return `<circle cx="${c.x}" cy="${c.y}" r="2.5" fill="${col}" stroke="#0f172a" stroke-width="1"><title>${(c.val / 1000).toFixed(2)}s</title></circle>`;
+      }).join('');
+
+      const lastVal = values[values.length - 1];
+      const firstVal = values[0];
+      const delta = lastVal - firstVal;
+      const trendIcon = delta > 0 ? '📈' : '📉';
+
+      return '<div class="mt-2 pt-2 border-t border-slate-800/60">' +
+        '<div class="flex justify-between items-center text-[10px] text-slate-400 font-mono mb-1">' +
+          '<span>' + trendIcon + ' RTO Trend (' + pts.length + ' runs)</span>' +
+          '<span class="text-slate-300 font-semibold">' + (lastVal / 1000).toFixed(2) + 's</span>' +
+        '</div>' +
+        '<div class="w-full bg-slate-950/80 rounded border border-slate-800/80 p-1 flex justify-center">' +
+          '<svg viewBox="0 0 ' + w + ' ' + h + '" class="w-full h-8 overflow-visible">' +
+            '<polyline fill="none" stroke="#6366f1" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" points="' + polylinePts + '" />' +
+            dots +
+          '</svg>' +
+        '</div>' +
+      '</div>';
+    }
+
     function renderTargets(targets, query = '') {
       const c = document.getElementById('targetsContainer');
       if (!targets || targets.length === 0) {
@@ -312,6 +365,10 @@
           ? `<button onclick="toggleMute(this.getAttribute('data-target'), false)" data-target="${safeName}" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">🔔 Unmute</button>`
           : `<button onclick="toggleMute(this.getAttribute('data-target'), true)" data-target="${safeName}" class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 border border-slate-700 transition">🔕 Mute</button>`;
 
+        const triggerBtn = t.trigger_pending
+          ? `<span class="text-[11px] px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-mono animate-pulse">⚡ Pending...</span>`
+          : `<button onclick="triggerDrill(this.getAttribute('data-target'))" data-target="${safeName}" class="text-[11px] px-2 py-0.5 rounded bg-indigo-900/60 hover:bg-indigo-800 text-indigo-300 border border-indigo-700/60 transition flex items-center space-x-1"><span>⚡</span><span>Run Drill</span></button>`;
+
         const checksHtml = (t.last_checks || []).map(ch => {
           const detail = ch.passed ? '✓ OK (= ' + escapeHtml(ch.value) + ')' : '✗ ' + escapeHtml(ch.reason || 'FAILED');
           const color = ch.passed ? 'text-emerald-400' : 'text-rose-400';
@@ -320,12 +377,14 @@
 
         const safeBackupPath = escapeHtml(t.last_backup_path || '');
         const backupSourceDisplay = t.last_backup_path ? safeBackupPath : 'Direct stream';
+        const sparklineHtml = renderSparkline(t.recent_history);
 
         return '<div class="bg-slate-900/80 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4 hover:border-slate-700 transition">' +
           '<div class="flex items-center justify-between">' +
             '<div>' +
               '<div class="flex items-center space-x-2">' +
                 '<h3 class="text-base font-bold text-white tracking-tight">' + safeName + '</h3>' +
+                triggerBtn +
                 muteBtn +
               '</div>' +
               '<span class="text-xs text-slate-400 font-mono">Last drill: ' + formatAgo(t.last_drilled_at) + '</span>' +
@@ -349,6 +408,7 @@
               '<span class="font-mono text-slate-300 text-[11px] truncate block" title="' + safeBackupPath + '">' + backupSourceDisplay + '</span>' +
             '</div>' +
           '</div>' +
+          sparklineHtml +
           (t.last_error ? '<div class="p-2.5 bg-rose-950/40 border border-rose-900/50 rounded text-rose-300 text-xs font-mono">' + escapeHtml(t.last_error) + '</div>' : '') +
           (t.last_checks && t.last_checks.length > 0 ? (
             '<div class="space-y-1">' +

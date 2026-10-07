@@ -485,3 +485,45 @@ func TestServerShutdown(t *testing.T) {
 		t.Fatal("timed out waiting for ListenAndServe to stop")
 	}
 }
+
+func TestTriggerTarget(t *testing.T) {
+	s := New(Config{DemoMode: true})
+
+	// Trigger existing demo target
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/targets/production-postgres/trigger", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("trigger code = %d, want 202", rec.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal trigger response: %v", err)
+	}
+	if resp["status"] != "triggered" {
+		t.Errorf("status = %v, want triggered", resp["status"])
+	}
+
+	targets := s.store.GetTargets()
+	var found *TargetRecord
+	for _, tRec := range targets {
+		if tRec.Name == "production-postgres" {
+			found = tRec
+			break
+		}
+	}
+	if found == nil || !found.TriggerPending {
+		t.Errorf("expected target production-postgres to have TriggerPending=true, got: %+v", found)
+	}
+
+	// Trigger non-existent target
+	reqNotFound := httptest.NewRequest(http.MethodPost, "/api/v1/targets/non-existent-db/trigger", nil)
+	recNotFound := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recNotFound, reqNotFound)
+
+	if recNotFound.Code != http.StatusNotFound {
+		t.Errorf("trigger non-existent target code = %d, want 404", recNotFound.Code)
+	}
+}

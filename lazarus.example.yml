@@ -25,7 +25,7 @@ notify:
   # Optional bearer token for webhook authentication (or set LAZARUS_API_KEY).
   api_key: ""
 
-  # slack (default) | discord | telegram | teams | generic | lazarus (for Lazarus Control Plane)
+  # slack (default) | discord | telegram | teams | generic | lazarus | pagerduty
   format: slack
 
   # on_failure (default) | always | never
@@ -138,4 +138,16 @@ targets:
     checks:
       - name: database has keys
         command: DBSIZE
+        expect_min: 1
+
+  - name: document-mongodb
+    engine: mongodb
+    path: /backups/mongo/dump-*.archive.gz
+    max_age: 26h
+    # Optional resource quotas for sandbox container:
+    # memory_limit: 2g
+    # cpus: "1.5"
+    checks:
+      - name: users collection is populated
+        command: db.users.countDocuments()
         expect_min: 1

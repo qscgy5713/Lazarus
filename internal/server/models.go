@@ -51,6 +51,7 @@ type TargetRecord struct {
 	Name           string          `json:"name"`
 	Status         TargetStatus    `json:"status"`
 	Muted          bool            `json:"muted"`
+	TriggerPending bool            `json:"trigger_pending,omitempty"`
 	LastPassed     bool            `json:"last_passed"`
 	LastDrilledAt  time.Time       `json:"last_drilled_at"`
 	LastHostname   string          `json:"last_hostname,omitempty"`

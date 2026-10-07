@@ -65,8 +65,18 @@ func TestRestoreCommandMySQL(t *testing.T) {
 	}
 }
 
+func TestRestoreCommandMongoDB(t *testing.T) {
+	args, err := restoreCommand(config.EngineMongoDB, &backup.File{Format: backup.FormatMongoArchive})
+	if err != nil {
+		t.Fatalf("restoreCommand() error = %v", err)
+	}
+	if args[0] != "mongorestore" {
+		t.Errorf("command = %q, want mongorestore", args[0])
+	}
+}
+
 func TestRestoreCommandUnsupportedEngine(t *testing.T) {
-	if _, err := restoreCommand(config.Engine("mongodb"), &backup.File{}); err == nil {
+	if _, err := restoreCommand(config.Engine("couchdb"), &backup.File{}); err == nil {
 		t.Fatal("restoreCommand() error = nil, want an error for an unsupported engine")
 	}
 }

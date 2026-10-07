@@ -21,6 +21,7 @@ const (
 	// pg_restore rather than psql.
 	FormatPostgresCustom Format = "postgres-custom"
 	FormatRedisRDB       Format = "redis-rdb"
+	FormatMongoArchive   Format = "mongo-archive"
 )
 
 // Compression describes the compression algorithm wrapping a backup dump.
@@ -162,8 +163,12 @@ func stripEnvelopeExtensions(path string) string {
 
 func detectFormat(path string, opaque bool) (Format, error) {
 	stripped := stripEnvelopeExtensions(path)
-	if strings.ToLower(filepath.Ext(stripped)) == ".rdb" {
+	ext := strings.ToLower(filepath.Ext(stripped))
+	if ext == ".rdb" {
 		return FormatRedisRDB, nil
+	}
+	if ext == ".archive" {
+		return FormatMongoArchive, nil
 	}
 
 	// A gzipped or encrypted dump is almost always plain SQL underneath;

@@ -31,6 +31,7 @@ const (
 	FormatTeams    Format = "teams"
 	FormatGeneric  Format = "generic"
 	FormatLazarus  Format = "lazarus"
+	FormatPagerDuty Format = "pagerduty"
 )
 
 // When decides which runs are worth a message.
@@ -87,32 +88,53 @@ func (n *Notifier) ShouldSend(results []verify.Result) bool {
 // Send delivers the summary. A delivery failure is returned rather than
 // swallowed so the caller can surface it — a notifier that quietly stops
 // working recreates the exact blind spot this package exists to close.
+// Network glitches or 5xx server errors trigger up to 3 attempts with exponential backoff.
 func (n *Notifier) Send(ctx context.Context, results []verify.Result) error {
 	payload, err := n.buildPayload(results)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.url, bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("build webhook request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if n.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+n.apiKey)
-		req.Header.Set("X-Lazarus-Key", n.apiKey)
-	}
+	maxAttempts := 3
+	var lastErr error
 
-	resp, err := n.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("send webhook: %w", err)
-	}
-	defer resp.Body.Close()
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.url, bytes.NewReader(payload))
+		if err != nil {
+			return fmt.Errorf("build webhook request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if n.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+n.apiKey)
+			req.Header.Set("X-Lazarus-Key", n.apiKey)
+		}
 
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("webhook returned status %d", resp.StatusCode)
+		resp, err := n.client.Do(req)
+		if err == nil {
+			status := resp.StatusCode
+			_ = resp.Body.Close()
+			if status < 300 {
+				return nil
+			}
+			lastErr = fmt.Errorf("webhook returned status %d", status)
+			// Do not retry 4xx errors other than 429 Too Many Requests
+			if status >= 400 && status < 500 && status != http.StatusTooManyRequests {
+				return lastErr
+			}
+		} else {
+			lastErr = fmt.Errorf("send webhook: %w", err)
+		}
+
+		if attempt < maxAttempts {
+			backoff := time.Duration(100*(1<<(attempt-1))) * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
 	}
-	return nil
+	return lastErr
 }
 
 func (n *Notifier) buildPayload(results []verify.Result) ([]byte, error) {
@@ -123,10 +145,71 @@ func (n *Notifier) buildPayload(results []verify.Result) ([]byte, error) {
 		return json.Marshal(n.buildTelegram(results))
 	case FormatTeams:
 		return json.Marshal(buildTeams(results))
+	case FormatPagerDuty:
+		return json.Marshal(n.buildPagerDuty(results))
 	case FormatGeneric, FormatLazarus:
 		return json.Marshal(buildGeneric(results))
 	default: // Slack, and anything Slack-compatible (Mattermost, etc.)
 		return json.Marshal(buildSlack(results))
+	}
+}
+
+type pagerDutyPayload struct {
+	RoutingKey  string           `json:"routing_key"`
+	EventAction string           `json:"event_action"`
+	Payload     pagerDutyDetails `json:"payload"`
+}
+
+type pagerDutyDetails struct {
+	Summary       string         `json:"summary"`
+	Severity      string         `json:"severity"`
+	Source        string         `json:"source"`
+	Timestamp     string         `json:"timestamp"`
+	CustomDetails map[string]any `json:"custom_details,omitempty"`
+}
+
+func (n *Notifier) buildPagerDuty(results []verify.Result) pagerDutyPayload {
+	hasFailure := anyFailed(results)
+	failedCount := 0
+	for _, r := range results {
+		if !r.Passed {
+			failedCount++
+		}
+	}
+
+	action := "trigger"
+	severity := "critical"
+	summary := fmt.Sprintf("Lazarus backup drill: %d target(s) failed", failedCount)
+	if !hasFailure {
+		severity = "info"
+		summary = fmt.Sprintf("Lazarus backup drill: all %d target(s) passed", len(results))
+	}
+
+	routingKey := n.apiKey
+	if routingKey == "" {
+		parts := strings.Split(strings.TrimRight(n.url, "/"), "/")
+		routingKey = parts[len(parts)-1]
+	}
+
+	host, _ := os.Hostname()
+	if host == "" {
+		host = "lazarus"
+	}
+
+	return pagerDutyPayload{
+		RoutingKey:  routingKey,
+		EventAction: action,
+		Payload: pagerDutyDetails{
+			Summary:   summary,
+			Severity:  severity,
+			Source:    host,
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			CustomDetails: map[string]any{
+				"total_targets": len(results),
+				"failed":        failedCount,
+				"results":       buildGeneric(results),
+			},
+		},
 	}
 }
 
